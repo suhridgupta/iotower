@@ -1,0 +1,16 @@
+plugins {
+    id 'application'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+application {
+    mainClass = 'com.iotower.desktop.Main'
+}
+
+dependencies {
+    implementation project(':core')
+}

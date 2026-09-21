@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: core + desktop (JDK only, no Android SDK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Dependency caching + Gradle wrapper checksum validation.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # No ANDROID_HOME on the runner, so settings.gradle omits :android and
+      # the build needs only a JDK. This runs the M0/M1+ pass gates.
+      - name: Run core tests and build desktop harness
+        run: ./gradlew :core:test :desktop:build --no-daemon

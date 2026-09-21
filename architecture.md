@@ -427,20 +427,24 @@ optional companion, off the critical path.
 
 ## 11. Build order (milestones)
 
-1. **Claim & read, no network.** App finds a device, `claimInterface(forceClaim)`
-   on every interface, builds the endpoint map from descriptors, logs
-   interrupt-IN reports to Logcat. Proves the no-root path on your hardware and
-   stops the UI scrolling.
-2. **Negotiation only.** Implement DEVLIST + IMPORT so `usbip list -r` and
-   `usbip attach` succeed and the device *appears* on Fedora (`lsusb`), even
-   before transfers work.
-3. **Transfers.** Control + interrupt (IN and OUT) + bulk wired through the
-   engine. Success = a plain gamepad shows up in `evtest` on the PC.
-4. **Validate output + a real driver.** Swap in the G29: confirm `new-lg4ff`
-   binds, Oversteer sees it, and force feedback fires from Oversteer's test /
-   DiRT. This exercises the OUT path and composite-device handling end to end.
-5. **Robustness.** UNLINK/cancel, device-reset reconnect (§7), foreground
-   service, clean client disconnect.
+The milestones are **testability-ordered**: the entire protocol is proven locally
+(JVM unit tests + the desktop harness against stock `usbip`) before any Android
+work, then ported to the TV, then to the G29. See [`MILESTONES.md`](MILESTONES.md)
+for the full plan with per-milestone test cases and pass gates.
+
+1. **Protocol codecs** — encode/decode every wire struct (§4); golden-byte vectors.
+2. **Descriptor parser + endpoint map** — raw descriptors -> endpoints (§5).
+3. **DEVLIST negotiation** — `usbip list -r` shows the (fake) device (§4.1).
+4. **IMPORT + control transfers** — the device enumerates in `lsusb`.
+5. **Interrupt IN + concurrency engine** — canned reports drive `evtest`;
+   out-of-order and UNLINK handled (§5.1). *Whole protocol proven, no hardware.*
+6. **Android claim & read** — `claimInterface(forceClaim)` on the TV, log reports
+   to Logcat; proves the no-root path (§2).
+7. **Android integration** — the proven server in a foreground service; a generic
+   pad's input reaches the PC over the network (§8).
+8. **G29** — OUT transfers / FFB, composite device, reset recovery (§7).
+9. **Robustness** — reset reconnect, screen-off survival, clean disconnect, latency.
+10. **Optional PC companion** — auto-attach, auto-reattach, PIN/TLS (§9).
 
 ---
 

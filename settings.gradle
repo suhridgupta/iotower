@@ -1,0 +1,27 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'iotower'
+include ':core'
+include ':desktop'
+
+// The Android app requires the Android SDK. Include it only when an SDK is
+// available, so `core` and `desktop` build with just a JDK (e.g. in CI).
+// Android Studio always has an SDK, so it sees all three modules as normal.
+if (System.getenv('ANDROID_HOME') != null
+        || System.getenv('ANDROID_SDK_ROOT') != null
+        || file('local.properties').exists()) {
+    include ':android'
+}

@@ -1,0 +1,6 @@
+// Root build. Plugin versions are declared here and applied per-module.
+// The java-library and application plugins are built in to Gradle (no version);
+// only the Android Gradle Plugin needs a version + the google() repo.
+plugins {
+    id 'com.android.application' version '8.7.3' apply false
+}

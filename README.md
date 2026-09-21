@@ -80,8 +80,20 @@ G29 + Oversteer + force feedback), then robustness (reset recovery, lifecycle).
 
 ## Building
 
-Single **Java** Android app, `minSdk 28`, no NDK and no third-party libraries.
-Open the project in Android Studio and build, or use the Gradle wrapper.
+A **Java** multi-module Gradle project. Most of the logic lives in a pure-Java
+`core` module with no Android dependency, so it builds and tests on a plain JVM;
+only the Android app touches the USB Host API.
+
+```bash
+./gradlew :core:test        # fast protocol/engine unit tests — no SDK, no device
+./gradlew :desktop:run      # run the server against a fake device, attach with stock usbip
+./gradlew :android:assembleDebug   # build the TV app (needs the Android SDK)
+```
+
+Layout: `core/` (protocol + engine, pure Java), `android/` (the TV app),
+`desktop/` (local test harness), `companion/` (optional Python PC daemon, §9),
+`testdata/` (captures). Toolchain and the full build/test guide are in
+[`DEVELOPING.md`](DEVELOPING.md).
 
 ## Documentation
 

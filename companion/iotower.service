@@ -1,0 +1,14 @@
+[Unit]
+Description=I/O Tower USB/IP companion (auto-attach + reattach)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Edit the TV IP (and busid, if not 1-1) before enabling.
+ExecStart=/usr/bin/python3 /opt/iotower/iotowerd.py --host 192.168.1.50 --busid 1-1
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
