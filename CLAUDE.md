@@ -85,5 +85,10 @@ token-efficient contract, and it stays in the repo for review.
   and the tests. One completed feature = one commit.
 - **Never push.** Do not `git push` or publish to the remote origin under any
   circumstances — the user does that. Commit locally only.
+- **No session metadata in commits.** Never put a Claude / Cowork session URL
+  or session identifier in a commit message or PR description — no
+  `Claude-Session:` trailer and no `claude.ai/…` session link. They leak an
+  internal identifier into shared history. A `Co-Authored-By:` attribution line
+  is fine; a session link is not.
 - Message: summarize the feature and reference the milestone, e.g.
   `M1: protocol codecs + golden-byte vectors`.
