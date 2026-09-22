@@ -61,11 +61,17 @@ missing.
 
 ## Status
 
-Early / in development. The full design, protocol details, concurrency model, and
-milestone build order live in [`architecture.md`](architecture.md). The suggested
-build order is: claim & read a device with no networking, then USB/IP negotiation
-(`DEVLIST` + `IMPORT`), then transfers, then validate with a real driver (the
-G29 + Oversteer + force feedback), then robustness (reset recovery, lifecycle).
+Early / in development. Protocol codecs (M1) and the descriptor parser + endpoint
+map (M2) are done; `DEVLIST` negotiation (M3) is next. The full design, protocol
+details, concurrency model, and the milestone plan with pass gates live in
+[`architecture.md`](architecture.md) and [`MILESTONES.md`](MILESTONES.md).
+
+The build order is **testability-ordered**: the entire USB/IP protocol is proven
+locally first — codecs, then the descriptor parser, then `DEVLIST`, `IMPORT`, and
+the interrupt-IN transfer engine, all against a fake device with the stock
+`usbip` client and no hardware — and only then is it ported to the TV
+(`claimInterface`), validated on the G29 (force feedback), and hardened (reset
+recovery, lifecycle, latency).
 
 ## Scope and limitations
 

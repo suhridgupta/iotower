@@ -36,6 +36,8 @@ testable on a JVM with no device. Only `AndroidUsbBackend` touches the Host API.
 ./gradlew :core:test
 
 # Local end-to-end: start a fake-device server, then attach with stock tools.
+# (usbip list/attach light up from M3/M4 onward; until then the server just
+#  accepts the connection and closes it.)
 ./gradlew :desktop:run
 #   in another shell, on the same box:
 sudo modprobe vhci-hcd

@@ -1,6 +1,6 @@
 # I/O Tower — Architecture
 
-I/O - Tower is a minimal, no-root USB/IP **server** that runs on an Android TV and exposes a
+I/O Tower is a minimal, no-root USB/IP **server** that runs on an Android TV and exposes a
 USB device plugged into it to a remote Linux PC as if it were connected locally.
 
 The server is **device-agnostic**: it is a transparent USB pass-through and
