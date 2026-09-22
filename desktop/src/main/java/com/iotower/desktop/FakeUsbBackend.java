@@ -4,30 +4,57 @@ import com.iotower.core.usb.DeviceInfo;
 import com.iotower.core.usb.UsbBackend;
 import com.iotower.core.usb.UsbTransfer;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
 /**
- * A synthetic USB device for local end-to-end testing. Advertises a simple
- * gamepad-like identity and (eventually) replays canned input reports, so the
- * whole server loop can be validated without hardware (§12: start with a dumb
- * pad).
+ * A synthetic USB device for local end-to-end testing. Serves a real captured
+ * descriptor dump (a Logitech F310 gamepad, testdata/simple-gamepad-descriptors.bin)
+ * so the whole server loop can be validated without hardware (§12: start with a
+ * dumb pad). Its {@link #deviceInfo()} identity is kept consistent with that
+ * capture.
  *
- * <p>TODO: serve a captured descriptor blob from {@code testdata/} and feed
- * periodic input reports on the interrupt-IN endpoint.
+ * <p>TODO: replay periodic input reports on the interrupt-IN endpoint (M5).
  */
 public final class FakeUsbBackend implements UsbBackend {
 
+    private static final String CAPTURE = "simple-gamepad-descriptors.bin";
+
+    /** Walk up from the working dir to find {@code testdata/<name>}. */
+    private static Path locateTestData(String name) {
+        Path dir = Paths.get("").toAbsolutePath();
+        for (int i = 0; i < 6 && dir != null; i++) {
+            Path candidate = dir.resolve("testdata").resolve(name);
+            if (Files.exists(candidate)) {
+                return candidate;
+            }
+            dir = dir.getParent();
+        }
+        throw new IllegalStateException("could not locate testdata/" + name
+                + " (searched upward from " + Paths.get("").toAbsolutePath()
+                + "); capture it per testdata/README.md §1");
+    }
+
     @Override
     public byte[] rawDescriptors() {
-        return new byte[0]; // TODO: return a captured descriptor dump.
+        try {
+            return Files.readAllBytes(locateTestData(CAPTURE));
+        } catch (IOException e) {
+            throw new UncheckedIOException("failed to read captured descriptors " + CAPTURE, e);
+        }
     }
 
     @Override
     public DeviceInfo deviceInfo() {
-        // Generic gamepad-ish identity for now.
+        // Matches testdata/simple-gamepad-descriptors.bin (F310, XInput mode).
         return new DeviceInfo(
-                0x046d, 0xc260, 0x0100,
-                0x00, 0x00, 0x00,
-                1, 1, 1,
-                /* speed */ 2);
+                0x046d, 0xc21d, 0x4014,   // idVendor, idProduct, bcdDevice
+                0xff, 0xff, 0xff,         // bDeviceClass/SubClass/Protocol (vendor-specific)
+                1, 1, 1,                  // bConfigurationValue, bNumConfigurations, bNumInterfaces
+                /* speed */ 2);           // USB full speed
     }
 
     @Override
