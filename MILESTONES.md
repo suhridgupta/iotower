@@ -153,3 +153,18 @@ plugged in. That is what lets "transfers work" be gated locally.
   rejected while the companion path succeeds.
 - **Gate:** hands-off reattach works; the PIN gate rejects the bare client.
 - **Where:** L2 (proxy logic) + L3 (real reattach).
+
+---
+
+## Beyond v1 — v2 (future)
+
+Only after v1 (M0–M10) is complete and proven. Recorded here so it isn't lost;
+not yet broken into gated milestones.
+
+- **Multiple simultaneous inputs.** Export several controllers at once (e.g. a
+  USB hub of gamepads on the TV), each read independently on Fedora. Requires
+  multi-device claim + lifecycle, one transfer engine per device, and several
+  concurrent client connections routed by `devid`. The protocol groundwork is
+  already in place (`DEVLIST` lists all claimed devices; `devid` disambiguates);
+  see architecture.md §10 (v2) for the design outline. Depends on rock-solid
+  single-device passthrough first.

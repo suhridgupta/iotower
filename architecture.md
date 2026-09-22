@@ -415,13 +415,30 @@ optional companion, off the critical path.
 **Out of scope (v1):**
 
 - Isochronous transfers (Host API can't; excludes webcams/USB audio)
-- Multiple devices or clients simultaneously
+- Multiple devices or clients simultaneously (planned for **v2** — see below)
 - Auth/encryption in the *core* server — LAN-only trust by default; optional
   PIN/TLS lives in the PC companion (§9), off the app's critical path
 - The PC companion itself (auto-attach, reattach, proxy) — optional, build it
   after the core works
 - Masking device resets from the client (stretch goal)
 - USB/IP over WAN, speed-negotiation edge cases
+
+**v2 (future — only after v1 is complete and proven):**
+
+- **Multiple simultaneous inputs.** Several controllers plugged into the TV
+  (typically through a USB hub) exported at once, each appearing as its own
+  device on Fedora and read independently by its own driver. The v1 design
+  already leans this way — `OP_REQ_DEVLIST` advertises *every* claimed device
+  (§4.1) and the transfer header carries a `devid` (`(busnum << 16) | devnum`,
+  §4.2) to disambiguate — so this is an **extension, not a redesign**. It adds:
+  claim and hold N devices; keep an endpoint map and a transfer engine *per*
+  device; and accept **several concurrent client connections** (the kernel opens
+  one TCP connection per `usbip attach`), routing each connection's URBs to the
+  right device by `devid`. On Fedora nothing changes — stock `usbip attach` is
+  run once per busid and each controller binds its own driver independently.
+- **Prerequisite:** v1 (M1–M10) finished and solid first — reset recovery,
+  latency, and lifecycle for a *single* device must be rock-solid before adding
+  the concurrency and per-device lifecycle that multiple inputs require.
 
 ---
 

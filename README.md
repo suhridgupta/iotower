@@ -78,7 +78,8 @@ recovery, lifecycle, latency).
 - **Isochronous transfers are unsupported.** The Android Host API cannot do them,
   which excludes webcams and USB audio. Everything else — control, interrupt, and
   bulk — is supported, including OUT transfers (force feedback, rumble, LEDs).
-- **One device and one client at a time** in v1.
+- **One device and one client at a time** in v1. Multiple simultaneous inputs
+  (e.g. a USB hub of controllers) are planned for v2 — see architecture.md §10.
 - **No auth or encryption in the core server.** It assumes a trusted LAN by
   default. An optional PC-side companion daemon can add auto-attach, auto-reattach
   on device reset, and a PIN/TLS gate via a localhost proxy — off the app's
