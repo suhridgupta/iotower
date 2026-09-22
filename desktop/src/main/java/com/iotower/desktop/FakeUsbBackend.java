@@ -92,18 +92,25 @@ public final class FakeUsbBackend implements UsbBackend {
                 /* speed */ 2);           // USB full speed
     }
 
-    // GET_DESCRIPTOR request type/request per the USB spec (device-to-host, standard,
-    // device recipient) — generic protocol constants, not device-specific.
-    private static final int REQ_TYPE_GET_DESCRIPTOR = 0x80;
+    // Standard USB request constants (USB 2.0 §9.4) — generic protocol values, not
+    // device-specific. A real device answers these during enumeration; the fake must
+    // too, or the kernel aborts (a stalled SET_CONFIGURATION => "can't set config").
+    private static final int REQ_TYPE_GET_DESCRIPTOR = 0x80; // device-to-host, standard, device
     private static final int REQUEST_GET_DESCRIPTOR = 0x06;
+    private static final int REQ_TYPE_STD_DEVICE_OUT = 0x00; // host-to-device, standard, device
+    private static final int REQ_TYPE_STD_IFACE_OUT = 0x01;  // host-to-device, standard, interface
+    private static final int REQUEST_SET_CONFIGURATION = 0x09;
+    private static final int REQUEST_SET_INTERFACE = 0x0b;
     private static final int DESC_TYPE_DEVICE = 0x01;
     private static final int DESC_TYPE_CONFIGURATION = 0x02;
+    private static final int DESC_TYPE_STRING = 0x03;
 
     @Override
     public int controlTransfer(int requestType, int request, int value, int index,
                                byte[] buffer, int length, int timeoutMillis) {
         if (requestType == REQ_TYPE_GET_DESCRIPTOR && request == REQUEST_GET_DESCRIPTOR) {
             int descriptorType = (value >> 8) & 0xFF;
+            int descriptorIndex = value & 0xFF;
             byte[] blob = rawDescriptors();
 
             if (descriptorType == DESC_TYPE_DEVICE) {
@@ -118,10 +125,46 @@ public final class FakeUsbBackend implements UsbBackend {
                         | ((blob[configOffset + 3] & 0xFF) << 8);
                 return copyDescriptor(blob, configOffset, totalLength, buffer, length);
             }
+            if (descriptorType == DESC_TYPE_STRING) {
+                byte[] str = stringDescriptor(descriptorIndex);
+                return copyDescriptor(str, 0, str.length, buffer, length);
+            }
         }
-        // Everything else (strings, etc.) stalls — the fake stands in for a real
-        // device; the server itself stays device-agnostic (it never sees this logic).
+        // No-data standard requests the kernel issues to bring the device up: ACK them
+        // (0 bytes transferred = success). SET_CONFIGURATION is the one whose stall
+        // aborts enumeration; SET_INTERFACE keeps a driver's alt-setting switch happy.
+        if (requestType == REQ_TYPE_STD_DEVICE_OUT && request == REQUEST_SET_CONFIGURATION) {
+            return 0;
+        }
+        if (requestType == REQ_TYPE_STD_IFACE_OUT && request == REQUEST_SET_INTERFACE) {
+            return 0;
+        }
+        // Everything else (vendor/class probes) stalls — a real controller stalls these
+        // too, and drivers tolerate it. The server never sees any of this logic.
         return -1;
+    }
+
+    /**
+     * A minimal USB string descriptor for {@code index}: index 0 is the LANGID list
+     * (en-US), others are UTF-16LE names matching the F310. Serving these clears the
+     * kernel's "string descriptor read error" during enumeration (cosmetic, but tidy).
+     */
+    private static byte[] stringDescriptor(int index) {
+        if (index == 0) {
+            return new byte[] {0x04, DESC_TYPE_STRING, 0x09, 0x04}; // LANGID 0x0409 en-US
+        }
+        String s;
+        switch (index) {
+            case 1:  s = "Logitech";                  break; // iManufacturer
+            case 2:  s = "Logitech Gamepad F310";     break; // iProduct
+            default: s = "0000";                      break; // iSerialNumber and any other
+        }
+        byte[] utf16 = s.getBytes(java.nio.charset.StandardCharsets.UTF_16LE);
+        byte[] desc = new byte[2 + utf16.length];
+        desc[0] = (byte) desc.length;   // bLength
+        desc[1] = DESC_TYPE_STRING;     // bDescriptorType
+        System.arraycopy(utf16, 0, desc, 2, utf16.length);
+        return desc;
     }
 
     /** Copies {@code min(available, requestedLength)} bytes of a descriptor into {@code buffer}. */
