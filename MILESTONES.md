@@ -111,7 +111,7 @@ plugged in. That is what lets "transfers work" be gated locally.
   `lsusb -v` / clean-detach flow remains to be run on the Fedora box (the
   Gradle build there needs JDK 17).
 
-## M5 — Interrupt IN + the concurrency engine  (`core/engine`)
+## M5 — Interrupt IN + the concurrency engine  (`core/engine`)  *(done)*
 
 - **Build:** the asynchronous submit/ret path, the reader → engine → writer
   threading, seqnum correlation, and `CMD_UNLINK` / cancel (§5.1).
@@ -123,6 +123,23 @@ plugged in. That is what lets "transfers work" be gated locally.
   cancel unit tests pass.
 - **Where:** L1 + L2. **At this point the entire protocol is proven with zero
   Android and zero hardware.**
+- **Status:** done. `TransferEngine` implements the §5.1 model — a single writer
+  thread (sole owner of the socket `OutputStream`, so replies never interleave),
+  a 2-thread worker pool for the blocking ep0 `controlTransfer`, and a
+  `seqnum`-keyed `ConcurrentHashMap` whose atomic `remove` is the single arbiter
+  between a completion and its cancel (so a cancelled URB never also emits a
+  `RET_SUBMIT`). `UsbIpServer.runTransferPhase` is now only the reader; the M4
+  provisional control loop and the ep≠0 `-EPIPE` stub are gone. ep≠0 IN/OUT go
+  through the async `UsbBackend.submit`; `desktop/FakeUsbBackend` now replays a
+  scripted XInput report cycle on `0x81` and accept-drops OUT on `0x02`. L1
+  `ConcurrencyEngineTest` drives the real server over loopback and asserts
+  out-of-order `seqnum` correlation and unlink→cancel→suppression;
+  `ImportControlTest` (ep0) still passes through the new engine. The L2
+  `usbip attach` + `evtest` run remains to be done on the Fedora box (the Gradle
+  build there needs JDK 17). *Note: the sandbox that implemented this had no
+  Maven access, so `:core:test` was cross-checked with an equivalent standalone
+  loopback driver and a full `javac` compile of the main + test tree; the JUnit
+  gate runs in CI / on the Fedora box.*
 
 ## M6 — Android claim & read  (Host-API spike, no network)
 

@@ -234,12 +234,14 @@ USB/IP is asynchronous: the client keeps many URBs in flight, keyed by `seqnum`,
 and expects replies that may arrive **out of order**. Design for that from the
 start — a single-threaded request/response loop will stall and add latency.
 
-> **Implementation status (M4 → M5).** M4 ships a deliberately *provisional*
-> single-threaded synchronous control loop (`UsbIpServer.runTransferPhase`) that
-> serves ep0 `GET_DESCRIPTOR` traffic well enough to enumerate — correct only
-> because enumeration is serial. The asynchronous reader → engine → writer model
-> described below is **M5**; `TransferEngine` is still a stub. Do not read this
-> section as already implemented.
+> **Implementation status (M5, done).** The asynchronous reader → engine → writer
+> model described below is implemented: `TransferEngine` owns a single writer
+> thread, a small worker pool for blocking ep0 `controlTransfer` calls, and a
+> `seqnum`-keyed `ConcurrentHashMap` whose atomic `remove` arbitrates completion
+> vs. cancel. `UsbIpServer.runTransferPhase` is now only the reader — it parses
+> frames and dispatches to the engine. M4's provisional single-threaded control
+> loop and its `-EPIPE` stub for ep≠0 are gone; interrupt/bulk IN and OUT
+> transfers and `CMD_UNLINK` cancellation are real.
 
 ```mermaid
 sequenceDiagram
