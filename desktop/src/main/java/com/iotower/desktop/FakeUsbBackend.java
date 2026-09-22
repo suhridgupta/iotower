@@ -57,10 +57,44 @@ public final class FakeUsbBackend implements UsbBackend {
                 /* speed */ 2);           // USB full speed
     }
 
+    // GET_DESCRIPTOR request type/request per the USB spec (device-to-host, standard,
+    // device recipient) — generic protocol constants, not device-specific.
+    private static final int REQ_TYPE_GET_DESCRIPTOR = 0x80;
+    private static final int REQUEST_GET_DESCRIPTOR = 0x06;
+    private static final int DESC_TYPE_DEVICE = 0x01;
+    private static final int DESC_TYPE_CONFIGURATION = 0x02;
+
     @Override
     public int controlTransfer(int requestType, int request, int value, int index,
                                byte[] buffer, int length, int timeoutMillis) {
-        return 0;
+        if (requestType == REQ_TYPE_GET_DESCRIPTOR && request == REQUEST_GET_DESCRIPTOR) {
+            int descriptorType = (value >> 8) & 0xFF;
+            byte[] blob = rawDescriptors();
+
+            if (descriptorType == DESC_TYPE_DEVICE) {
+                int deviceLen = blob[0] & 0xFF; // bLength of the device descriptor
+                return copyDescriptor(blob, 0, deviceLen, buffer, length);
+            }
+            if (descriptorType == DESC_TYPE_CONFIGURATION) {
+                int deviceLen = blob[0] & 0xFF;
+                // wTotalLength is the LE u16 at offset 2 of the configuration descriptor.
+                int configOffset = deviceLen;
+                int totalLength = (blob[configOffset + 2] & 0xFF)
+                        | ((blob[configOffset + 3] & 0xFF) << 8);
+                return copyDescriptor(blob, configOffset, totalLength, buffer, length);
+            }
+        }
+        // Everything else (strings, etc.) stalls — the fake stands in for a real
+        // device; the server itself stays device-agnostic (it never sees this logic).
+        return -1;
+    }
+
+    /** Copies {@code min(available, requestedLength)} bytes of a descriptor into {@code buffer}. */
+    private static int copyDescriptor(byte[] blob, int offset, int available, byte[] buffer,
+            int requestedLength) {
+        int n = Math.min(Math.min(available, requestedLength), buffer.length);
+        System.arraycopy(blob, offset, buffer, 0, n);
+        return n;
     }
 
     @Override

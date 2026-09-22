@@ -61,9 +61,10 @@ missing.
 
 ## Status
 
-Early / in development. Protocol codecs (M1) and the descriptor parser + endpoint
-map (M2), and `DEVLIST` negotiation (M3) are done; `IMPORT` + control
-transfers (M4) is next. The full design, protocol
+Early / in development. Protocol codecs (M1), the descriptor parser + endpoint
+map (M2), `DEVLIST` negotiation (M3), and `IMPORT` + control transfers (M4) are
+done — a fake device enumerates in `lsusb` over the desktop harness. The
+interrupt-IN transfer engine (M5) is next. The full design, protocol
 details, concurrency model, and the milestone plan with pass gates live in
 [`architecture.md`](architecture.md) and [`MILESTONES.md`](MILESTONES.md).
 
