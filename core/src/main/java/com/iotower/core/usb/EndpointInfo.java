@@ -2,8 +2,9 @@ package com.iotower.core.usb;
 
 /**
  * One endpoint as recorded from the descriptors (§5): address, type, direction,
- * max packet size, polling interval. URBs are routed by {@code (address,
- * direction)} against the {@link EndpointMap}, never by device identity.
+ * max packet size, polling interval, and the interface that owns it. URBs are
+ * routed by {@code (address, direction)} against the {@link EndpointMap}, never
+ * by device identity.
  */
 public final class EndpointInfo {
     public static final int TYPE_CONTROL = 0;
@@ -16,12 +17,15 @@ public final class EndpointInfo {
     public final int direction;    // UsbIp.DIR_IN / DIR_OUT
     public final int maxPacketSize;
     public final int interval;
+    public final int interfaceNumber; // bInterfaceNumber of the owning interface
 
-    public EndpointInfo(int address, int type, int direction, int maxPacketSize, int interval) {
+    public EndpointInfo(int address, int type, int direction, int maxPacketSize,
+                        int interval, int interfaceNumber) {
         this.address = address;
         this.type = type;
         this.direction = direction;
         this.maxPacketSize = maxPacketSize;
         this.interval = interval;
+        this.interfaceNumber = interfaceNumber;
     }
 }

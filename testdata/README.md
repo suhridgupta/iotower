@@ -20,6 +20,10 @@ sudo lsusb -v -s 001:007 > g29-lsusb.txt
 Capture both a **simple generic gamepad** and the **G29** (composite,
 multi-interface) so the parser is tested on the easy and the hard case.
 
+Present so far: `simple-gamepad-descriptors.bin` + `simple-gamepad-lsusb.txt`,
+a Logitech F310 (XInput mode) — used by the M2 `DescriptorParser` test and the
+desktop `FakeUsbBackend`. The **G29** dump is still to be captured.
+
 ## 2. Golden wire captures  (for M1 — the codec vectors)
 
 Byte-exact USB/IP exchanges from the reference server, so codec round-trips are

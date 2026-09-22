@@ -55,6 +55,12 @@ For any non-trivial feature or milestone:
 2. **Implement — Sonnet subagent.** Implements strictly from the PRD. It does not
    redesign; if the PRD is wrong or underspecified, it **stops and flags** rather
    than improvising.
+3. **Audit & update the docs — same commit.** After a feature is implemented,
+   review the docs and bring them current as part of the same change: mark the
+   milestone done in `MILESTONES.md`, and fix `README.md`, `architecture.md`,
+   `DEVELOPING.md`, `testdata/README.md` (and this file) wherever the feature
+   changed reality — status, build order, commands, wire/descriptor layouts,
+   testdata. Never leave a doc contradicting the code.
 
 Keep this split even for medium tasks — the committed PRD is the handoff and the
 token-efficient contract, and it stays in the repo for review.
@@ -69,7 +75,8 @@ token-efficient contract, and it stays in the repo for review.
   Prefer a few high-value tests (round-trip, golden-byte vectors, out-of-order
   completion) over many redundant ones.
 - **Definition of done:** `./gradlew :core:test` green, and the milestone's L2/L3
-  gate met where applicable. State which gate was checked and how.
+  gate met where applicable. State which gate was checked and how. Docs audited
+  and updated in the same commit (feature-workflow step 3).
 
 ## Conventions
 

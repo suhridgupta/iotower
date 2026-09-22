@@ -38,7 +38,7 @@ plugged in. That is what lets "transfers work" be gated locally.
   later milestone builds on.
 - **Where:** L1 + smoke.
 
-## M1 — Protocol codecs  (`core/protocol`)
+## M1 — Protocol codecs  (`core/protocol`)  *(done)*
 
 - **Build:** encode/decode for every wire struct — `OpHeader`,
   `usbip_usb_device`, `usbip_usb_interface`, `header_basic`, `cmd_submit`,
@@ -49,7 +49,7 @@ plugged in. That is what lets "transfers work" be gated locally.
 - **Gate:** `:core:test` green, including the golden vectors.
 - **Where:** L1.
 
-## M2 — Descriptor parser + endpoint map  (`core/usb`)
+## M2 — Descriptor parser + endpoint map  (`core/usb`)  *(done)*
 
 - **Build:** `DescriptorParser` walks raw configuration descriptors into an
   `EndpointMap` (§5).
@@ -60,6 +60,9 @@ plugged in. That is what lets "transfers work" be gated locally.
 - **Gate:** `:core:test` green; both composite and simple devices parse
   correctly.
 - **Where:** L1.
+- **Status:** done. Parser + endpoint map implemented with L1 tests; a real
+  Logitech F310 capture (`testdata/simple-gamepad-descriptors.bin`) is the
+  ground-truth cross-check. The G29 dump is still to be captured.
 
 ## M3 — DEVLIST negotiation  (`core/net`)
 
@@ -150,3 +153,18 @@ plugged in. That is what lets "transfers work" be gated locally.
   rejected while the companion path succeeds.
 - **Gate:** hands-off reattach works; the PIN gate rejects the bare client.
 - **Where:** L2 (proxy logic) + L3 (real reattach).
+
+---
+
+## Beyond v1 — v2 (future)
+
+Only after v1 (M0–M10) is complete and proven. Recorded here so it isn't lost;
+not yet broken into gated milestones.
+
+- **Multiple simultaneous inputs.** Export several controllers at once (e.g. a
+  USB hub of gamepads on the TV), each read independently on Fedora. Requires
+  multi-device claim + lifecycle, one transfer engine per device, and several
+  concurrent client connections routed by `devid`. The protocol groundwork is
+  already in place (`DEVLIST` lists all claimed devices; `devid` disambiguates);
+  see architecture.md §10 (v2) for the design outline. Depends on rock-solid
+  single-device passthrough first.
