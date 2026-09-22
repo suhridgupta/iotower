@@ -62,11 +62,13 @@ missing.
 ## Status
 
 Early / in development. Protocol codecs (M1), the descriptor parser + endpoint
-map (M2), `DEVLIST` negotiation (M3), and `IMPORT` + control transfers (M4) are
-done — a fake device enumerates in `lsusb` over the desktop harness. The
-interrupt-IN transfer engine (M5) is next. The full design, protocol
-details, concurrency model, and the milestone plan with pass gates live in
-[`architecture.md`](architecture.md) and [`MILESTONES.md`](MILESTONES.md).
+map (M2), `DEVLIST` negotiation (M3), `IMPORT` + control transfers (M4), and the
+asynchronous interrupt/bulk transfer engine with `CMD_UNLINK` cancellation (M5)
+are done — a fake device enumerates in `lsusb` and streams scripted input over
+the desktop harness, **so the entire USB/IP protocol is now proven with no
+Android and no hardware**. Porting to the TV (M6/M7) is next. The full design,
+protocol details, concurrency model, and the milestone plan with pass gates live
+in [`architecture.md`](architecture.md) and [`MILESTONES.md`](MILESTONES.md).
 
 The build order is **testability-ordered**: the entire USB/IP protocol is proven
 locally first — codecs, then the descriptor parser, then `DEVLIST`, `IMPORT`, and

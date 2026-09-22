@@ -36,13 +36,16 @@ testable on a JVM with no device. Only `AndroidUsbBackend` touches the Host API.
 ./gradlew :core:test
 
 # Local end-to-end: start a fake-device server, then attach with stock tools.
-# (usbip list works from M3; usbip attach lights up from M4. Until attach
-#  lands, the server answers OP_REQ_DEVLIST and closes the connection.)
+# (usbip list works from M3; usbip attach + enumeration from M4; from M5 the
+#  fake also streams scripted input reports, so evtest shows live axis/button
+#  events with nothing plugged in.)
 ./gradlew :desktop:run
 #   in another shell, on the same box:
 sudo modprobe vhci-hcd
 usbip list -r 127.0.0.1                 # read-only, no root needed
 sudo usbip attach -r 127.0.0.1 -b 1-1  # writes the vhci sysfs node -> needs root
+lsusb                                   # the fake device is present locally
+sudo evtest                             # pick the fake's event node -> scripted button/axis events
 #   detach when done (usbip port prints the port number):
 sudo usbip detach -p <port>
 
