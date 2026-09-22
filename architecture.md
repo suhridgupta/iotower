@@ -234,6 +234,13 @@ USB/IP is asynchronous: the client keeps many URBs in flight, keyed by `seqnum`,
 and expects replies that may arrive **out of order**. Design for that from the
 start — a single-threaded request/response loop will stall and add latency.
 
+> **Implementation status (M4 → M5).** M4 ships a deliberately *provisional*
+> single-threaded synchronous control loop (`UsbIpServer.runTransferPhase`) that
+> serves ep0 `GET_DESCRIPTOR` traffic well enough to enumerate — correct only
+> because enumeration is serial. The asynchronous reader → engine → writer model
+> described below is **M5**; `TransferEngine` is still a stub. Do not read this
+> section as already implemented.
+
 ```mermaid
 sequenceDiagram
     participant K as Fedora (vhci)
@@ -474,8 +481,9 @@ for the full plan with per-milestone test cases and pass gates.
   real traffic with `usbmon`/Wireshark, and compare your app's framing and the
   device's actual reports against it.
 - **Fedora side:** `sudo modprobe vhci-hcd` → `usbip list -r <tv-ip>` →
-  `usbip attach -r <tv-ip> -b <busid>` → `lsusb` → `evtest` → (device's own
-  tooling, e.g. Oversteer).
+  `sudo usbip attach -r <tv-ip> -b <busid>` → `lsusb` → `evtest` → (device's own
+  tooling, e.g. Oversteer). `usbip list` is read-only; `attach`/`detach` write
+  the vhci sysfs node and need root.
 - **Exercise reset recovery deliberately** with a device that re-enumerates (the
   G29 mode switch is a convenient one): attach, let the host driver flip it, and
   confirm you recover.

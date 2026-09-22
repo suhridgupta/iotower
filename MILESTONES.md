@@ -81,7 +81,7 @@ plugged in. That is what lets "transfers work" be gated locally.
   (`InterfaceInfo` on the `EndpointMap`). L1 in-process integration test
   (`DevlistNegotiationTest`) asserts the framed reply field-by-field; the
   L2 `usbip list -r 127.0.0.1` check against the desktop harness remains to
-  be run on the Fedora box. `OP_REQ_IMPORT` is deferred to M4.
+  be run on the Fedora box. `OP_REQ_IMPORT` handled in M4.
 
 ## M4 — IMPORT + control transfers → enumeration
 
@@ -94,6 +94,22 @@ plugged in. That is what lets "transfers work" be gated locally.
 - **Gate:** the fake device fully enumerates in `lsusb` with correct
   descriptors; clean detach.
 - **Where:** L1 + L2.
+- **Status:** done. `UsbIpServer` answers `OP_REQ_IMPORT` (matching the invented
+  busid `1-1`), replies `OP_REP_IMPORT` with the single `usbip_usb_device` (no
+  interface array), then switches the same socket into the transfer phase and
+  serves ep0 control transfers via a **provisional single-threaded synchronous
+  loop** (`runTransferPhase`): each `CMD_SUBMIT` on ep0 has its setup packet
+  decoded generically and is forwarded to `UsbBackend.controlTransfer`, then a
+  framed `RET_SUBMIT` is returned. This loop is correct only for serial
+  enumeration traffic and is replaced by the async engine in M5 — ep≠0 submits
+  get a provisional `-EPIPE` `RET_SUBMIT` and `CMD_UNLINK` a status-0
+  `RET_UNLINK`, inert acks that keep the stream framed and detach clean.
+  `FakeUsbBackend.controlTransfer` now synthesizes `GET_DESCRIPTOR`
+  DEVICE/CONFIGURATION from the F310 capture so the harness enumerates. L1
+  `ImportControlTest` asserts IMPORT framing + two sequential ep0
+  `GET_DESCRIPTOR` round-trips + the reject branch. The L2 `usbip attach` /
+  `lsusb -v` / clean-detach flow remains to be run on the Fedora box (the
+  Gradle build there needs JDK 17).
 
 ## M5 — Interrupt IN + the concurrency engine  (`core/engine`)
 

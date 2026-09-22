@@ -8,7 +8,7 @@ import com.iotower.core.usb.UsbBackend;
  * reader → engine → writer flow with a single writer thread so replies never
  * interleave on the wire.
  *
- * <p>TODO(milestone 3): implement submit/ret and unlink/ret, out-of-order
+ * <p>TODO(milestone 5): implement submit/ret and unlink/ret, out-of-order
  * completion, and the full concurrency model from §5.1.
  */
 public final class TransferEngine {

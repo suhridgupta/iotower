@@ -41,8 +41,10 @@ testable on a JVM with no device. Only `AndroidUsbBackend` touches the Host API.
 ./gradlew :desktop:run
 #   in another shell, on the same box:
 sudo modprobe vhci-hcd
-usbip list -r 127.0.0.1
-usbip attach -r 127.0.0.1 -b 1-1
+usbip list -r 127.0.0.1                 # read-only, no root needed
+sudo usbip attach -r 127.0.0.1 -b 1-1  # writes the vhci sysfs node -> needs root
+#   detach when done (usbip port prints the port number):
+sudo usbip detach -p <port>
 
 # Build / install the TV app (needs the Android SDK).
 ./gradlew :android:assembleDebug
