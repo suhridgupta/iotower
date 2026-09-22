@@ -62,7 +62,8 @@ missing.
 ## Status
 
 Early / in development. Protocol codecs (M1) and the descriptor parser + endpoint
-map (M2) are done; `DEVLIST` negotiation (M3) is next. The full design, protocol
+map (M2), and `DEVLIST` negotiation (M3) are done; `IMPORT` + control
+transfers (M4) is next. The full design, protocol
 details, concurrency model, and the milestone plan with pass gates live in
 [`architecture.md`](architecture.md) and [`MILESTONES.md`](MILESTONES.md).
 

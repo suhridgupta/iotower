@@ -75,6 +75,13 @@ plugged in. That is what lets "transfers work" be gated locally.
 - **Gate:** both the in-process test and the `usbip list` output show the device
   correctly.
 - **Where:** L1 + L2.
+- **Status:** done. `UsbIpServer` answers `OP_REQ_DEVLIST` with the one
+  backend-advertised device (invented busid `1-1`); the interface
+  class/subclass/protocol triples come from an extended `DescriptorParser`
+  (`InterfaceInfo` on the `EndpointMap`). L1 in-process integration test
+  (`DevlistNegotiationTest`) asserts the framed reply field-by-field; the
+  L2 `usbip list -r 127.0.0.1` check against the desktop harness remains to
+  be run on the Fedora box. `OP_REQ_IMPORT` is deferred to M4.
 
 ## M4 — IMPORT + control transfers → enumeration
 

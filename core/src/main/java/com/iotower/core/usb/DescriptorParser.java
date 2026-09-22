@@ -81,6 +81,14 @@ public final class DescriptorParser {
                                 "INTERFACE descriptor too short: " + bLength);
                     }
                     currentInterface = rawDescriptors[pos + 2] & 0xFF;
+                    int bAlternateSetting = rawDescriptors[pos + 3] & 0xFF;
+                    if (bAlternateSetting == 0) {
+                        int bInterfaceClass = rawDescriptors[pos + 5] & 0xFF;
+                        int bInterfaceSubClass = rawDescriptors[pos + 6] & 0xFF;
+                        int bInterfaceProtocol = rawDescriptors[pos + 7] & 0xFF;
+                        map.addInterface(new InterfaceInfo(currentInterface, bInterfaceClass,
+                                bInterfaceSubClass, bInterfaceProtocol));
+                    }
                     break;
                 }
                 case DESC_ENDPOINT: {
