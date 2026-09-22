@@ -331,13 +331,13 @@ codecs are complete), `UsbBackend`, `DeviceInfo`, `EndpointMap`,
   ```
   ./gradlew :desktop:run                 # in one terminal
   sudo modprobe vhci-hcd
-  usbip list   -r 127.0.0.1              # still shows 1-1  046d:c21d (M3, regression)
-  usbip attach -r 127.0.0.1 -b 1-1
+  usbip list   -r 127.0.0.1              # still shows 1-1  046d:c21d (M3, regression; no root)
+  sudo usbip attach -r 127.0.0.1 -b 1-1  # attach needs root (writes the vhci sysfs node)
   lsusb                                  # shows  ID 046d:c21d  (device enumerated)
   lsusb -v -d 046d:c21d                  # device + config + interface + endpoint
                                          #   descriptors match testdata/simple-gamepad-lsusb.txt
   usbip port                             # shows the attached port
-  usbip detach -p <port>                 # clean detach, harness returns to listening
+  sudo usbip detach -p <port>            # clean detach (needs root), harness returns to listening
   ```
 
 ## Pass gate

@@ -50,8 +50,8 @@ On the PC side there is nothing to build — just the stock tools:
 
 ```bash
 sudo modprobe vhci-hcd
-usbip list -r <tv-ip>                 # see what the TV exports
-usbip attach -r <tv-ip> -b <busid>    # attach it
+usbip list -r <tv-ip>                      # see what the TV exports (no root needed)
+sudo usbip attach -r <tv-ip> -b <busid>    # attach it (needs root)
 lsusb                                 # the device is now present locally
 evtest                                # or Oversteer, or the device's own tooling
 ```

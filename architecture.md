@@ -481,8 +481,9 @@ for the full plan with per-milestone test cases and pass gates.
   real traffic with `usbmon`/Wireshark, and compare your app's framing and the
   device's actual reports against it.
 - **Fedora side:** `sudo modprobe vhci-hcd` → `usbip list -r <tv-ip>` →
-  `usbip attach -r <tv-ip> -b <busid>` → `lsusb` → `evtest` → (device's own
-  tooling, e.g. Oversteer).
+  `sudo usbip attach -r <tv-ip> -b <busid>` → `lsusb` → `evtest` → (device's own
+  tooling, e.g. Oversteer). `usbip list` is read-only; `attach`/`detach` write
+  the vhci sysfs node and need root.
 - **Exercise reset recovery deliberately** with a device that re-enumerates (the
   G29 mode switch is a convenient one): attach, let the host driver flip it, and
   confirm you recover.
