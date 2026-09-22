@@ -62,6 +62,14 @@ every interface the device exposes. The scrolling stops the instant you claim,
 because the kernel input driver has let go. From there you own the endpoints via
 `controlTransfer()` and `UsbRequest.queue()` / `requestWait()`.
 
+> **Implementation status (M6).** The `HostApiSpike` class in `:android`
+> implements exactly this path standalone — `openDevice`, `claimInterface(intf,
+> forceClaim=true)` on every interface, then `UsbRequest.queue()` /
+> `requestWait()` on each interrupt-IN endpoint, logging reports to Logcat (tag
+> `IoTowerSpike`). It is a no-network spike that de-risks the Host-API port
+> before M7 wires the proven server behind it; the L3 gate (Logcat reports +
+> the TV UI ceasing to scroll) is run on the TV.
+
 The often-repeated "Android blocks HID devices" is narrower than it sounds: bare
 boot-protocol mice/keyboards get filtered out of `UsbManager`, and a few devices
 never enumerate for userspace. Most devices — including the G29, which you
@@ -465,7 +473,8 @@ for the full plan with per-milestone test cases and pass gates.
 5. **Interrupt IN + concurrency engine** — canned reports drive `evtest`;
    out-of-order and UNLINK handled (§5.1). *Whole protocol proven, no hardware.*
 6. **Android claim & read** — `claimInterface(forceClaim)` on the TV, log reports
-   to Logcat; proves the no-root path (§2).
+   to Logcat; proves the no-root path (§2). *Spike (`HostApiSpike`) implemented;
+   L3 gate runs on the TV.*
 7. **Android integration** — the proven server in a foreground service; a generic
    pad's input reaches the PC over the network (§8).
 8. **G29** — OUT transfers / FFB, composite device, reset recovery (§7).

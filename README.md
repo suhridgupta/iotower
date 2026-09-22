@@ -66,9 +66,14 @@ map (M2), `DEVLIST` negotiation (M3), `IMPORT` + control transfers (M4), and the
 asynchronous interrupt/bulk transfer engine with `CMD_UNLINK` cancellation (M5)
 are done — a fake device enumerates in `lsusb` and streams scripted input over
 the desktop harness, **so the entire USB/IP protocol is now proven with no
-Android and no hardware**. Porting to the TV (M6/M7) is next. The full design,
-protocol details, concurrency model, and the milestone plan with pass gates live
-in [`architecture.md`](architecture.md) and [`MILESTONES.md`](MILESTONES.md).
+Android and no hardware**. The M6 Host-API spike (`HostApiSpike`:
+`claimInterface(forceClaim)` on every interface + interrupt-IN read to Logcat,
+no network) is now implemented in `:android`; its L3 gate — live reports in
+Logcat **and** the TV UI ceasing to scroll — runs on the TV. M7 (the proven
+server in a foreground service, real input over the network) is next. The full
+design, protocol details, concurrency model, and the milestone plan with pass
+gates live in [`architecture.md`](architecture.md) and
+[`MILESTONES.md`](MILESTONES.md).
 
 The build order is **testability-ordered**: the entire USB/IP protocol is proven
 locally first — codecs, then the descriptor parser, then `DEVLIST`, `IMPORT`, and

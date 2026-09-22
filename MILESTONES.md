@@ -151,6 +151,21 @@ plugged in. That is what lets "transfers work" be gated locally.
   hardware).
 - **Where:** L3, minimal. First contact with the Host API; de-risks the port
   before wiring the network in.
+- **Status:** code complete; L3 hardware gate pending on the TV. The
+  `:android` module now carries the spike: `HostApiSpike` opens the device,
+  `claimInterface(forceClaim=true)` on **every** interface (§2 — the
+  stop-scrolling step), parses `getRawDescriptors()` through the **core**
+  `DescriptorParser` to log the endpoint map (and cross-checks the parsed
+  interrupt-IN addresses against the Host API's own `UsbEndpoint` list), then
+  runs one reader thread per interrupt-IN endpoint queuing a `UsbRequest` and
+  logging each report to Logcat under tag `IoTowerSpike`. `MainActivity` drives
+  it: enumerate → USB-permission handshake (§8) → Start/Stop. No network, no
+  `UsbIpServer`, no `UsbBackend` — that is M7. `core` is untouched (`:core:test`
+  stays green) and stays Android-free. The gate — live reports in Logcat **and**
+  the TV UI ceasing to scroll — must be run on the TV with a pad plugged in
+  (`./gradlew :android:installDebug`, then `adb logcat -s IoTowerSpike`); it
+  could not be run in the authoring environment (no Android SDK / no TV). PRD:
+  `prds/m6-android-claim-read.md`.
 
 ## M7 — Android integration  (first true end-to-end)
 
