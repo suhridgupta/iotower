@@ -480,7 +480,10 @@ for the full plan with per-milestone test cases and pass gates.
    to Logcat; proves the no-root path (§2). *Spike (`HostApiSpike`) implemented;
    L3 gate runs on the TV.*
 7. **Android integration** — the proven server in a foreground service; a generic
-   pad's input reaches the PC over the network (§8).
+   pad's input reaches the PC over the network (§8). *Implemented:
+   `AndroidUsbBackend` fills the `UsbBackend` seam (open + forceClaim, a
+   `requestWait` dispatcher, `submit`/`cancel`), `ServerService` runs
+   `UsbIpServer`; L3 hardware gate runs on the TV.*
 8. **G29** — OUT transfers / FFB, composite device, reset recovery (§7).
 9. **Robustness** — reset reconnect, screen-off survival, clean disconnect, latency.
 10. **Optional PC companion** — auto-attach, auto-reattach, PIN/TLS (§9).

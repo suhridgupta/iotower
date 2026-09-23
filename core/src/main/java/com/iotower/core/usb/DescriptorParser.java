@@ -37,6 +37,72 @@ public final class DescriptorParser {
 
     private DescriptorParser() {}
 
+    private static final int LEN_DEVICE_DESCRIPTOR = 18;
+    private static final int MIN_LEN_DEVICE_CONFIG_PAIR =
+            LEN_DEVICE_DESCRIPTOR + MIN_LEN_CONFIGURATION;
+
+    /**
+     * Decodes the device-identity fields of the {@code usbip_usb_device}
+     * struct (§4.1) from raw descriptors: {@code idVendor}/{@code idProduct}/
+     * {@code bcdDevice}/{@code bDeviceClass}/{@code bDeviceSubClass}/
+     * {@code bDeviceProtocol}/{@code bNumConfigurations} from the 18-byte
+     * device descriptor (USB 2.0 §9.6.1), plus {@code bConfigurationValue}
+     * and {@code bNumInterfaces} from the first configuration descriptor
+     * (found by advancing past the device descriptor by its {@code bLength}).
+     *
+     * <p>Little-endian, hand-decoded exactly as {@link #parse} decodes
+     * {@code wMaxPacketSize} — do not use a BIG_ENDIAN {@link
+     * java.nio.ByteBuffer} here (this class's Endianness note applies).
+     *
+     * @param speed not present in the descriptors (the Host API has no
+     *              device-speed getter); passed through unchanged into the
+     *              returned {@link DeviceInfo}.
+     */
+    public static DeviceInfo parseDeviceInfo(byte[] raw, int speed) {
+        if (raw == null || raw.length < MIN_LEN_DEVICE_CONFIG_PAIR) {
+            throw new IllegalArgumentException("raw descriptors null or too short for a device"
+                    + " + configuration descriptor");
+        }
+
+        int deviceBLength = raw[0] & 0xFF;
+        int deviceBDescriptorType = raw[1] & 0xFF;
+        if (deviceBLength < LEN_DEVICE_DESCRIPTOR || deviceBDescriptorType != DESC_DEVICE) {
+            throw new IllegalArgumentException(
+                    "expected a DEVICE descriptor at offset 0, got bLength=" + deviceBLength
+                            + " bDescriptorType=" + deviceBDescriptorType);
+        }
+
+        int deviceClass = raw[4] & 0xFF;
+        int deviceSubClass = raw[5] & 0xFF;
+        int deviceProtocol = raw[6] & 0xFF;
+        int idVendor = (raw[8] & 0xFF) | ((raw[9] & 0xFF) << 8);
+        int idProduct = (raw[10] & 0xFF) | ((raw[11] & 0xFF) << 8);
+        int bcdDevice = (raw[12] & 0xFF) | ((raw[13] & 0xFF) << 8);
+        int numConfigurations = raw[17] & 0xFF;
+
+        int configOffset = deviceBLength;
+        if (configOffset + MIN_LEN_CONFIGURATION > raw.length) {
+            throw new IllegalArgumentException(
+                    "configuration descriptor at offset " + configOffset
+                            + " runs past end of buffer (" + raw.length + ")");
+        }
+        int configBLength = raw[configOffset] & 0xFF;
+        int configBDescriptorType = raw[configOffset + 1] & 0xFF;
+        if (configBLength < MIN_LEN_CONFIGURATION || configBDescriptorType != DESC_CONFIGURATION) {
+            throw new IllegalArgumentException(
+                    "expected a CONFIGURATION descriptor at offset " + configOffset
+                            + ", got bLength=" + configBLength
+                            + " bDescriptorType=" + configBDescriptorType);
+        }
+        int numInterfaces = raw[configOffset + 4] & 0xFF;
+        int configurationValue = raw[configOffset + 5] & 0xFF;
+
+        return new DeviceInfo(idVendor, idProduct, bcdDevice,
+                deviceClass, deviceSubClass, deviceProtocol,
+                configurationValue, numConfigurations, numInterfaces,
+                speed);
+    }
+
     public static EndpointMap parse(byte[] rawDescriptors) {
         if (rawDescriptors == null || rawDescriptors.length < 2) {
             throw new IllegalArgumentException("raw descriptors null or too short");
