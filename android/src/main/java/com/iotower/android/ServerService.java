@@ -21,42 +21,49 @@ import java.util.Locale;
  * background socket servers and revokes USB access when the process dies, so the
  * server must live here with a persistent notification.
  *
- * <p>Receives the permission-granted {@link UsbDevice} from {@link
- * MainActivity} via {@code UsbManager.EXTRA_DEVICE}, builds an {@link
- * AndroidUsbBackend}, and runs the device-agnostic {@link UsbIpServer} on a
- * worker thread (its accept loop blocks). One device, one session (M7 scope) —
- * device reset / re-enumeration recovery is M8/M9, not here.
+ * <p>Receives the permission-granted {@link UsbDevice} from {@link MainActivity}
+ * via {@code UsbManager.EXTRA_DEVICE}. All blocking USB work — opening + claiming
+ * the device and running the accept loop — happens on a dedicated worker thread,
+ * NEVER on the main thread (open()/claim block, and doing that in
+ * {@code onStartCommand} trips a foreground-service ANR). One device, one session
+ * (M7 scope); reset/re-enumeration recovery is M8/M9.
  */
 public class ServerService extends Service {
     private static final String CHANNEL_ID = "iotower_server";
     private static final int NOTIFICATION_ID = 1;
 
     private Thread serverThread;
-    private UsbIpServer server;
-    private AndroidUsbBackend backend;
+    private volatile UsbIpServer server;
+    private volatile AndroidUsbBackend backend;
+    private volatile boolean stopping;
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         startForeground(NOTIFICATION_ID, buildNotification("Starting…"));
 
-        UsbManager usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
-        UsbDevice device = intent != null
+        final UsbManager usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
+        final UsbDevice device = intent != null
                 ? intent.getParcelableExtra(UsbManager.EXTRA_DEVICE) : null;
 
-        backend = AndroidUsbBackend.open(usbManager, device);
-        if (backend == null) {
-            // Invariant 6 / §8: open+claim can fail (permission lost, race). Do
-            // not leave a dead foreground service running.
-            updateNotification("Failed to open/claim device");
-            stopSelf();
-            return START_NOT_STICKY;
-        }
-
-        server = new UsbIpServer(backend);
-        serverThread = new Thread(server, "usbip-server");
+        // All blocking USB work off the main thread (open()/claim block).
+        serverThread = new Thread(() -> {
+            AndroidUsbBackend b = AndroidUsbBackend.open(usbManager, device);
+            if (b == null || stopping) {
+                if (b != null) {
+                    b.close();
+                }
+                updateNotification("Failed to open/claim device");
+                stopSelf();
+                return;
+            }
+            backend = b;
+            UsbIpServer s = new UsbIpServer(b);
+            server = s;
+            updateNotification("Serving " + describe(b) + " on :3240");
+            s.run(); // blocks until stop()
+        }, "iotower-server");
         serverThread.start();
 
-        updateNotification("Serving " + describe(backend) + " on :3240");
         return START_STICKY;
     }
 
@@ -91,20 +98,24 @@ public class ServerService extends Service {
 
     @Override
     public void onDestroy() {
-        // Order matters (PRD §2): stop the server first so no transfer is
-        // mid-flight when the backend closes.
-        if (server != null) {
-            server.stop();
+        stopping = true;
+        // Order matters: stop the server first so no transfer is mid-flight when
+        // the backend closes.
+        UsbIpServer s = server;
+        if (s != null) {
+            s.stop();
         }
-        if (serverThread != null) {
+        Thread t = serverThread;
+        if (t != null) {
             try {
-                serverThread.join(1000);
+                t.join(1500);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
         }
-        if (backend != null) {
-            backend.close();
+        AndroidUsbBackend b = backend;
+        if (b != null) {
+            b.close();
         }
         super.onDestroy();
     }

@@ -1,11 +1,12 @@
 package com.iotower.android;
 
+import android.hardware.usb.UsbConstants;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbEndpoint;
 import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
-import android.hardware.usb.UsbRequest;
+import android.util.Log;
 
 import com.iotower.core.protocol.UsbIp;
 import com.iotower.core.usb.DescriptorParser;
@@ -13,91 +14,81 @@ import com.iotower.core.usb.DeviceInfo;
 import com.iotower.core.usb.UsbBackend;
 import com.iotower.core.usb.UsbTransfer;
 
-import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * {@link UsbBackend} backed by the Android USB Host API (§2, §5). This is the
  * only class that touches real USB hardware; everything above it is plain Java.
  *
- * <p>The M6 spike ({@link HostApiSpike}) proved the open +
- * {@code claimInterface(intf, forceClaim=true)} + interrupt-IN read path on the
- * real TV, standalone and without the network (M6 gate MET, 2026-09-23). This
- * class mirrors that proven Host-API usage but fills out the full {@link
- * UsbBackend} contract so the device-agnostic {@code UsbIpServer} /
- * {@code TransferEngine} can run behind it inside {@link ServerService} (M7).
- *
- * <p><b>Ownership.</b> {@link #open} performs the open + forceClaim(every
- * interface) + endpoint-map build and starts the single dispatcher thread
- * before returning a ready backend, or {@code null} on failure (Invariant 6).
- * The private constructor is only ever called from {@link #open}.
- *
- * <p><b>Routing.</b> {@code submit} looks up the real {@code UsbEndpoint}
- * purely by {@code endpointAddress} against the claim-time map built from the
- * device's own descriptors — never by VID/PID or device identity (Invariant
- * 1).
- *
- * <p><b>Dispatcher thread.</b> Exactly one thread may call {@code
- * UsbDeviceConnection.requestWait()} on a connection (Android Host API
- * constraint), so a single daemon thread owns it here, in a loop, for the
- * lifetime of the backend. It uses the timeout form ({@code requestWait(200)}, API 26+,
- * milliseconds) so it polls the {@code running} flag rather than
- * relying solely on {@link #close()}'s {@code connection.close()} backstop to
- * unblock a parked wait (PRD Risk 3).
+ * <p><b>EXPERIMENT (M7 bring-up):</b> interrupt/bulk-IN reads use the
+ * <em>synchronous</em> {@link UsbDeviceConnection#bulkTransfer} instead of
+ * {@code UsbRequest}/{@code requestWait}. Rationale: with {@code requestWait} the
+ * IN reads complete with 0 bytes once a USB/IP client attaches (see
+ * bugs/m7-interrupt-in-empty-reports.md), and {@code requestWait} hides the URB
+ * status — {@code bulkTransfer} returns the byte count or {@code -1} on
+ * error/timeout, so it distinguishes "errored" from "empty" and may deliver the
+ * report outright. One dedicated reader thread per IN endpoint loops
+ * {@code bulkTransfer} and hands each non-empty read to the oldest waiting client
+ * URB. OUT also uses {@code bulkTransfer} (worker pool); ep0 uses
+ * {@link #controlTransfer}. Device-agnostic (Invariant 1); {@code core} stays
+ * Android-free (Invariant 2); failures are reported as {@code -ECONNRESET}
+ * (Invariant 6).
  */
 public final class AndroidUsbBackend implements UsbBackend {
 
-    /** {@code -ECONNRESET} — matches {@code TransferEngine}/{@code FakeUsbBackend}. */
+    private static final String TAG = "IoTowerBackend";
     private static final int STATUS_ECONNRESET = -104;
+    private static final int OUT_TIMEOUT_MS = 1000;
+    /** IN read timeout: bounds how often each reader thread rechecks {@code running}. */
+    private static final int READ_TIMEOUT_MS = 200;
 
     /**
-     * USB full-speed, matching what {@code FakeUsbBackend} advertises. The Host
-     * API exposes no device-speed getter; this is believed cosmetic (the vhci
-     * client re-reads descriptors after import and the kernel re-derives
-     * topology) but is a guess — flagged as an open question (PRD Risk 1).
+     * USB full-speed, matching what {@code FakeUsbBackend} advertises. No Host
+     * API device-speed getter exists; confirmed on hardware (2026-09-23) — the
+     * F310 enumerated full-speed over vhci with this value (PRD Risk 1).
      */
     private static final int SPEED = 2;
-
-    /** Poll interval for the dispatcher's {@code requestWait} timeout form. */
-    private static final long DISPATCH_POLL_MS = 200;
 
     private final UsbDeviceConnection connection;
     private final List<UsbInterface> claimedInterfaces;
     private final Map<Integer, UsbEndpoint> endpoints;
-    private final Thread dispatcher;
+
+    /** One reader (endpoint + waiter FIFO + thread) per interrupt/bulk-IN endpoint. */
+    private final Map<Integer, EndpointReader> readers = new HashMap<>();
+    private final Object inLock = new Object();
+    private final ExecutorService outWorkers =
+            Executors.newFixedThreadPool(2, named("iotower-usb-out"));
+
+    private final AtomicLong reads = new AtomicLong();
+    private final AtomicLong diag = new AtomicLong();
 
     private volatile boolean running;
 
-    /**
-     * Open {@code device}, claim every interface (forceClaim, §2), build the
-     * address&#8594;endpoint map, and start the dispatcher thread. Mirrors {@code
-     * HostApiSpike.start}. Returns {@code null} on failure (Invariant 6 / §8:
-     * permission lost or race) — the caller ({@link ServerService}) must not
-     * crash, just report the failure.
-     */
     public static AndroidUsbBackend open(UsbManager usbManager, UsbDevice device) {
         if (usbManager == null || device == null) {
             return null;
         }
-
         UsbDeviceConnection connection = usbManager.openDevice(device);
         if (connection == null) {
-            // §8 / Invariant 6: openDevice can return null (permission lost, race).
+            Log.e(TAG, "openDevice returned null — cannot claim");
             return null;
         }
 
         List<UsbInterface> claimedInterfaces = new ArrayList<>();
         Map<Integer, UsbEndpoint> endpoints = new HashMap<>();
-
         int total = device.getInterfaceCount();
         for (int i = 0; i < total; i++) {
             UsbInterface intf = device.getInterface(i);
-            // §2: forceClaim on EVERY interface detaches the kernel driver.
             if (connection.claimInterface(intf, /* forceClaim = */ true)) {
                 claimedInterfaces.add(intf);
                 for (int e = 0; e < intf.getEndpointCount(); e++) {
@@ -106,6 +97,13 @@ public final class AndroidUsbBackend implements UsbBackend {
                 }
             }
         }
+
+        StringBuilder eps = new StringBuilder();
+        for (Integer addr : endpoints.keySet()) {
+            eps.append("0x").append(Integer.toHexString(addr)).append(' ');
+        }
+        Log.i(TAG, "opened + claimed " + claimedInterfaces.size() + "/" + total
+                + " interface(s); endpoints: " + eps.toString().trim());
 
         return new AndroidUsbBackend(connection, claimedInterfaces, endpoints);
     }
@@ -116,9 +114,21 @@ public final class AndroidUsbBackend implements UsbBackend {
         this.claimedInterfaces = claimedInterfaces;
         this.endpoints = endpoints;
         this.running = true;
-        this.dispatcher = new Thread(this::dispatchLoop, "iotower-usb-dispatcher");
-        this.dispatcher.setDaemon(true);
-        this.dispatcher.start();
+
+        // One reader thread per interrupt/bulk-IN endpoint (bulkTransfer is blocking).
+        for (UsbEndpoint ep : endpoints.values()) {
+            boolean in = ep.getDirection() == UsbConstants.USB_DIR_IN;
+            boolean pollable = ep.getType() == UsbConstants.USB_ENDPOINT_XFER_INT
+                    || ep.getType() == UsbConstants.USB_ENDPOINT_XFER_BULK;
+            if (in && pollable) {
+                EndpointReader r = new EndpointReader(ep.getAddress(), ep);
+                readers.put(ep.getAddress(), r);
+                r.thread = new Thread(() -> readLoop(r),
+                        "iotower-usb-read-0x" + Integer.toHexString(ep.getAddress()));
+                r.thread.setDaemon(true);
+                r.thread.start();
+            }
+        }
     }
 
     @Override
@@ -130,16 +140,11 @@ public final class AndroidUsbBackend implements UsbBackend {
     public DeviceInfo deviceInfo() {
         byte[] raw = connection.getRawDescriptors();
         if (raw == null) {
-            // Invariant 6: guard the null-returning Host API call. UsbIpServer
-            // already treats a null deviceInfo() as "no descriptors — close"
-            // (see handleDevlist/handleImport), so null is the correct failure
-            // signal here, not an exception.
             return null;
         }
         try {
             return DescriptorParser.parseDeviceInfo(raw, SPEED);
         } catch (RuntimeException e) {
-            // Malformed/short descriptors: same null-on-failure contract.
             return null;
         }
     }
@@ -155,143 +160,151 @@ public final class AndroidUsbBackend implements UsbBackend {
     public UsbTransfer submit(int endpointAddress, int direction, byte[] buffer, int length) {
         UsbEndpoint endpoint = endpoints.get(endpointAddress);
         if (endpoint == null) {
-            // Unknown endpoint — the engine treats a null return as -ECONNRESET
-            // (TransferEngine.submit). Invariant 6.
-            return null;
+            Log.w(TAG, "submit: no claimed endpoint for 0x" + Integer.toHexString(endpointAddress));
+            return null; // engine maps a null return to -ECONNRESET
         }
-
-        UsbRequest request = new UsbRequest();
-        if (!request.initialize(connection, endpoint)) {
-            // Invariant 6: guard the null/false-returning Host API call.
-            return null;
+        if (direction == UsbIp.DIR_IN) {
+            return submitIn(endpointAddress);
         }
+        return submitOut(endpoint, buffer, length);
+    }
 
-        ByteBuffer byteBuffer = ByteBuffer.wrap(buffer);
-        UsbTransfer transfer = new UsbTransfer(request);
-        request.setClientData(new Pending(transfer, byteBuffer, direction, length));
-
-        // queue(ByteBuffer) is the non-deprecated form (API 26+; minSdk 28).
-        if (!request.queue(byteBuffer)) {
-            // Invariant 6: do not desync the stream — complete the transfer
-            // instead of leaving it hanging, and release the now-unused request.
-            transfer.completion.complete(new UsbTransfer.Result(STATUS_ECONNRESET, null, 0));
-            closeQuietly(request);
+    /** IN: register a waiter; the endpoint's reader thread delivers the next non-empty read. */
+    private UsbTransfer submitIn(int endpointAddress) {
+        synchronized (inLock) {
+            EndpointReader r = readers.get(endpointAddress);
+            if (r == null) {
+                Log.w(TAG, "submitIn: no reader for 0x" + Integer.toHexString(endpointAddress));
+                return null;
+            }
+            UsbTransfer transfer = new UsbTransfer(null);
+            r.waiters.addLast(transfer);
             return transfer;
         }
+    }
 
+    /** OUT: synchronous {@code bulkTransfer} on a worker pool. */
+    private UsbTransfer submitOut(UsbEndpoint endpoint, byte[] buffer, int length) {
+        UsbTransfer transfer = new UsbTransfer(null);
+        try {
+            outWorkers.execute(() -> {
+                int sent;
+                try {
+                    sent = connection.bulkTransfer(endpoint, buffer, length, OUT_TIMEOUT_MS);
+                } catch (RuntimeException e) {
+                    sent = -1;
+                }
+                transfer.completion.complete(sent < 0
+                        ? new UsbTransfer.Result(STATUS_ECONNRESET, null, 0)
+                        : new UsbTransfer.Result(0, null, sent));
+            });
+        } catch (RuntimeException e) {
+            transfer.completion.complete(new UsbTransfer.Result(STATUS_ECONNRESET, null, 0));
+        }
         return transfer;
     }
 
     @Override
     public void cancel(UsbTransfer transfer) {
-        if (transfer == null || transfer.handle == null) {
+        if (transfer == null) {
             return;
         }
-        // Resolve the completion here, best-effort: the dispatcher may also see
-        // this UsbRequest come back through requestWait() after cancel(), but by
-        // then completion.isDone() is already true and it is a harmless no-op —
-        // the engine's atomic inflight.remove (not this completion) is the real
-        // arbiter between a cancel and a race with a normal completion.
+        synchronized (inLock) {
+            for (EndpointReader r : readers.values()) {
+                if (r.waiters.remove(transfer)) {
+                    break;
+                }
+            }
+        }
         if (!transfer.completion.isDone()) {
             transfer.completion.complete(new UsbTransfer.Result(STATUS_ECONNRESET, null, 0));
-        }
-        try {
-            ((UsbRequest) transfer.handle).cancel();
-        } catch (RuntimeException e) {
-            // best-effort, per HostApiSpike.ReaderThread.shutdown (Invariant 6:
-            // a failed cancel must not kill the session).
         }
     }
 
     @Override
     public void close() {
         running = false;
-        try {
-            // The dispatcher polls `running` at most every DISPATCH_POLL_MS, so
-            // this bounded join succeeds well before it; connection.close()
-            // below is still the backstop for a wait that firmware does not
-            // unblock on its own (PRD Risk 3).
-            dispatcher.join(500);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        outWorkers.shutdownNow();
+        // Fail any pending waiters.
+        synchronized (inLock) {
+            for (EndpointReader r : readers.values()) {
+                for (UsbTransfer waiter : r.waiters) {
+                    if (!waiter.completion.isDone()) {
+                        waiter.completion.complete(new UsbTransfer.Result(STATUS_ECONNRESET, null, 0));
+                    }
+                }
+                r.waiters.clear();
+            }
         }
-
         for (UsbInterface intf : claimedInterfaces) {
             try {
                 connection.releaseInterface(intf);
-            } catch (RuntimeException e) {
-                // best-effort teardown, per HostApiSpike.stop.
+            } catch (RuntimeException ignored) {
             }
         }
-        connection.close();
+        connection.close(); // unblocks any in-flight bulkTransfer
+        for (EndpointReader r : readers.values()) {
+            if (r.thread != null) {
+                try {
+                    r.thread.join(500);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
     }
 
-    /** The single thread allowed to call {@code connection.requestWait()} (§5.1). */
-    private void dispatchLoop() {
+    /** Dedicated per-endpoint reader: blocking {@code bulkTransfer} loop. */
+    private void readLoop(EndpointReader r) {
+        int max = Math.max(1, r.endpoint.getMaxPacketSize());
+        byte[] buf = new byte[max];
         while (running) {
-            UsbRequest request;
+            int n;
             try {
-                request = connection.requestWait(DISPATCH_POLL_MS);
-            } catch (TimeoutException e) {
-                continue; // nothing completed within the poll window; recheck `running`.
+                n = connection.bulkTransfer(r.endpoint, buf, buf.length, READ_TIMEOUT_MS);
             } catch (RuntimeException e) {
-                // Invariant 6: a bad wait must not kill the dispatcher mid-session
-                // (e.g. a torn-down connection on some Host API versions).
+                if (!running) {
+                    break;
+                }
                 continue;
             }
-            if (request == null) {
-                continue; // connection closed elsewhere; recheck `running` and exit.
+            long total = reads.incrementAndGet();
+            if (diag.incrementAndGet() <= 12 || total % 500 == 0) {
+                Log.i(TAG, "bulkRead ep=0x" + Integer.toHexString(r.address) + " n=" + n
+                        + " waiters=" + r.waiters.size() + " (#" + total + ")");
             }
-            completeRequest(request);
-        }
-    }
-
-    /** Matches a completed {@code UsbRequest} back to its {@link UsbTransfer} and completes it. */
-    private void completeRequest(UsbRequest request) {
-        Object clientData = request.getClientData();
-        if (!(clientData instanceof Pending)) {
-            // Not one of ours — nothing to correlate.
-            closeQuietly(request);
-            return;
-        }
-        Pending pending = (Pending) clientData;
-        if (!pending.transfer.completion.isDone()) {
-            byte[] data = null;
-            int actualLength;
-            if (pending.direction == UsbIp.DIR_IN) {
-                // The ByteBuffer's position after queue()+requestWait() gives the
-                // actual bytes transferred in (same pattern as HostApiSpike.ReaderThread).
-                actualLength = pending.buffer.position();
-                data = Arrays.copyOf(pending.buffer.array(), actualLength);
-            } else {
-                // OUT: nothing to read back; actual length is what we sent.
-                actualLength = pending.length;
+            if (n > 0) {
+                UsbTransfer waiter;
+                synchronized (inLock) {
+                    waiter = r.waiters.pollFirst();
+                }
+                if (waiter != null && !waiter.completion.isDone()) {
+                    waiter.completion.complete(new UsbTransfer.Result(0, Arrays.copyOf(buf, n), n));
+                }
             }
-            pending.transfer.completion.complete(new UsbTransfer.Result(0, data, actualLength));
-        }
-        closeQuietly(request);
-    }
-
-    private static void closeQuietly(UsbRequest request) {
-        try {
-            request.close();
-        } catch (RuntimeException e) {
-            // best-effort
+            // n <= 0: timeout / no data / error — loop and recheck `running`.
         }
     }
 
-    /** Correlates a queued {@link UsbRequest} back to its {@link UsbTransfer} and buffer. */
-    private static final class Pending {
-        final UsbTransfer transfer;
-        final ByteBuffer buffer;
-        final int direction;
-        final int length;
+    private static ThreadFactory named(String prefix) {
+        AtomicInteger n = new AtomicInteger();
+        return r -> {
+            Thread t = new Thread(r, prefix + "-" + n.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        };
+    }
 
-        Pending(UsbTransfer transfer, ByteBuffer buffer, int direction, int length) {
-            this.transfer = transfer;
-            this.buffer = buffer;
-            this.direction = direction;
-            this.length = length;
+    /** One interrupt/bulk-IN endpoint: its waiter FIFO and dedicated reader thread. */
+    private static final class EndpointReader {
+        final int address;
+        final UsbEndpoint endpoint;
+        final ArrayDeque<UsbTransfer> waiters = new ArrayDeque<>();
+        Thread thread;
+
+        EndpointReader(int address, UsbEndpoint endpoint) {
+            this.address = address;
+            this.endpoint = endpoint;
         }
     }
 }
