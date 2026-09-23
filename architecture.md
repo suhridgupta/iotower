@@ -68,7 +68,11 @@ because the kernel input driver has let go. From there you own the endpoints via
 > `requestWait()` on each interrupt-IN endpoint, logging reports to Logcat (tag
 > `IoTowerSpike`). It is a no-network spike that de-risks the Host-API port
 > before M7 wires the proven server behind it; the L3 gate (Logcat reports +
-> the TV UI ceasing to scroll) is run on the TV.
+> the TV UI ceasing to scroll) is run on the TV. **Confirmed on hardware
+> (2026-09-23): a Logitech F310 was claimed with no root and its interrupt-IN
+> input streamed to Logcat — reading those reports is only possible once
+> `forceClaim` detaches the kernel driver, so this premise now holds on the
+> actual TV.**
 
 The often-repeated "Android blocks HID devices" is narrower than it sounds: bare
 boot-protocol mice/keyboards get filtered out of `UsbManager`, and a few devices

@@ -166,6 +166,20 @@ plugged in. That is what lets "transfers work" be gated locally.
   (`./gradlew :android:installDebug`, then `adb logcat -s IoTowerSpike`); it
   could not be run in the authoring environment (no Android SDK / no TV). PRD:
   `prds/m6-android-claim-read.md`.
+- **Gate: MET (2026-09-23, on the `fedora` box → TV).** Verified with a Logitech
+  F310 in XInput mode (`046D:C21D`): the device opened, its one interface was
+  claimed with `forceClaim` (`class 0xFF`, XInput control), the endpoint map
+  parsed to interrupt-IN `0x81` / interrupt-OUT `0x02` (both 32-byte) and the
+  `core` parser cross-checked against the Host API. A sustained stream of
+  20-byte `ep 0x81` reports followed, decoding cleanly as XInput input — left
+  stick X swept its full signed range (`0x0080`→`0x7FFF`→`0x8000`), the right
+  trigger ramped `0x00`→`0xFF`, and the button/D-pad/thumb bits toggled. Because
+  interrupt-IN can only be read once `forceClaim` has detached the kernel driver,
+  the report stream is itself proof of the no-root premise (§2); the TV UI
+  ceasing to respond to the pad is the visible corroboration. Clean release on
+  Stop. **The entire USB/IP path is now proven end-to-end in pieces (protocol +
+  engine off-device through M5; Host-API claim + read on real hardware here);
+  M7 wires them together over the network.**
 
 ## M7 — Android integration  (first true end-to-end)
 

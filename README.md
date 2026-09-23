@@ -68,9 +68,10 @@ are done — a fake device enumerates in `lsusb` and streams scripted input over
 the desktop harness, **so the entire USB/IP protocol is now proven with no
 Android and no hardware**. The M6 Host-API spike (`HostApiSpike`:
 `claimInterface(forceClaim)` on every interface + interrupt-IN read to Logcat,
-no network) is now implemented in `:android`; its L3 gate — live reports in
-Logcat **and** the TV UI ceasing to scroll — runs on the TV. M7 (the proven
-server in a foreground service, real input over the network) is next. The full
+no network) **passed its L3 gate on real hardware** — a Logitech F310 was
+claimed with no root and its live input streamed to Logcat, confirming the
+no-root premise (§2). M7 (the proven server in a foreground service, real input
+over the network) is next. The full
 design, protocol details, concurrency model, and the milestone plan with pass
 gates live in [`architecture.md`](architecture.md) and
 [`MILESTONES.md`](MILESTONES.md).
