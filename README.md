@@ -70,8 +70,13 @@ Android and no hardware**. The M6 Host-API spike (`HostApiSpike`:
 `claimInterface(forceClaim)` on every interface + interrupt-IN read to Logcat,
 no network) **passed its L3 gate on real hardware** — a Logitech F310 was
 claimed with no root and its live input streamed to Logcat, confirming the
-no-root premise (§2). M7 (the proven server in a foreground service, real input
-over the network) is next. The full
+no-root premise (§2). M7 wires that proven server into the foreground `ServerService` behind a real
+`AndroidUsbBackend` — Host-API `submit`/`cancel` on interrupt/bulk endpoints and
+a single `requestWait` dispatcher — so a generic pad plugged into the TV reaches
+the PC over the network; it is **code complete, with its L3 hardware gate
+(`usbip attach` → `evtest`) pending on the TV** (as with M6, the authoring
+environment has no Android SDK or TV). M8 (the G29: OUT/FFB, composite device,
+reset recovery) is next. The full
 design, protocol details, concurrency model, and the milestone plan with pass
 gates live in [`architecture.md`](architecture.md) and
 [`MILESTONES.md`](MILESTONES.md).
@@ -132,10 +137,8 @@ adb devices                     # TV should show as "device" (not "unauthorized"
 #   or directly:
 adb install -r android/build/outputs/apk/debug/app-debug.apk
 
-# Watch the app's logs. The M6 Host-API spike logs under a single tag:
-adb logcat -c                   # clear old logs (optional)
-adb logcat -s IoTowerSpike      # follow only spike output
-#   everything from the app's process, all tags:
+# Watch the app's logs. In M7 the app runs the USB/IP server (Start); to watch
+# everything from the app's process, all tags:
 adb logcat --pid=$(adb shell pidof -s com.iotower.android)
 
 # Launch / stop the app from the PC (optional)
@@ -160,9 +163,11 @@ adb connect <tv-ip>:<debug-port>
 `adb connect` again clears it. DHCP can change the TV's IP after a reboot;
 reserve it on the router if you reconnect often. A signature mismatch on install
 (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, e.g. after building on a different
-machine) needs `adb uninstall com.iotower.android` first. The full M6 test
-procedure (plug in a pad, Start, and what the spike log should show) is the L3
-gate in [`MILESTONES.md`](MILESTONES.md).
+machine) needs `adb uninstall com.iotower.android` first. The M7 L3 gate — plug
+in a generic pad, press Start, then `usbip attach` from Fedora to the TV's IP and
+watch live input in `evtest` — is in [`MILESTONES.md`](MILESTONES.md). (The M6
+`HostApiSpike` that logged under `IoTowerSpike` is retained as a diagnostic but is
+no longer wired to the Start button.)
 
 ## Documentation
 

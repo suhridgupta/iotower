@@ -190,6 +190,24 @@ plugged in. That is what lets "transfers work" be gated locally.
   generic gamepad**; `evtest` on the PC shows real input coming through the TV.
 - **Gate:** a real device's input appears on the PC over the network via the TV.
 - **Where:** L3.
+- **Status:** code complete; L3 hardware gate pending on the TV. `AndroidUsbBackend`
+  now implements the full `UsbBackend` contract against the Host API — `open()`
+  opens the device and `claimInterface(forceClaim=true)` on every interface
+  (mirroring the M6 spike), builds an address->`UsbEndpoint` map, and runs one
+  dispatcher thread that owns `UsbDeviceConnection.requestWait()`; `submit`
+  queues a `UsbRequest` per interrupt/bulk URB (IN and OUT), correlated back by
+  `setClientData` and completed to its seqnum by the engine; `cancel` maps to
+  `UsbRequest.cancel()`; `deviceInfo()` comes from the new device-agnostic
+  `core` helper `DescriptorParser.parseDeviceInfo`. `ServerService` receives the
+  permission-granted `UsbDevice` (`UsbManager.EXTRA_DEVICE`), builds the backend,
+  and runs the proven `UsbIpServer` on a worker thread with a foreground
+  notification; `MainActivity` Start/Stop now drive the service (no longer the
+  spike). `core` is unchanged apart from the additive `parseDeviceInfo` (new L1
+  test in `DescriptorParserTest` green; `:core:test` stays green) and stays
+  Android-free. The L3 gate — `usbip attach` from Fedora to the TV's IP with a
+  generic pad, live input in `evtest` — must be run on the TV
+  (`./gradlew :android:installDebug`); it could not be run in the authoring
+  environment (no Android SDK / no TV). PRD: `prds/m7-android-integration.md`.
 
 ## M8 — G29: OUT transfers, composite, reset
 
