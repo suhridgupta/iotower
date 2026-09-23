@@ -11,11 +11,17 @@ import com.iotower.core.usb.UsbTransfer;
  * {@link UsbBackend} backed by the Android USB Host API (§2, §5). This is the
  * only class that touches real USB hardware; everything above it is plain Java.
  *
- * <p>TODO(milestone 1): {@code openDevice} + {@code claimInterface(intf, true)}
- * on every interface; {@code getRawDescriptors()}.
- * <p>TODO(milestone 3): {@code controlTransfer} on ep0; {@code UsbRequest.queue()}
- * / {@code requestWait()} on other endpoints with a completion loop; cancel via
- * {@code UsbRequest.cancel()}.
+ * <p>The M6 spike ({@link HostApiSpike}) already proved the open +
+ * {@code claimInterface(intf, forceClaim=true)} + interrupt-IN read path on the
+ * real TV, standalone and without the network. M7 fleshes out this class against
+ * the {@link UsbBackend} contract so the proven {@code UsbIpServer} runs behind
+ * it inside {@link ServerService}.
+ *
+ * <p>TODO(M7): {@code deviceInfo()} from the parsed descriptors;
+ * {@code submit} — {@code UsbRequest.queue()} / {@code requestWait()} on
+ * interrupt/bulk endpoints with a completion loop keyed by seqnum (§5.1); and
+ * {@code cancel} via {@code UsbRequest.cancel()}. ({@code controlTransfer} on
+ * ep0 and {@code rawDescriptors()} are already wired.)
  */
 public final class AndroidUsbBackend implements UsbBackend {
     private final UsbManager usbManager;

@@ -66,9 +66,15 @@ map (M2), `DEVLIST` negotiation (M3), `IMPORT` + control transfers (M4), and the
 asynchronous interrupt/bulk transfer engine with `CMD_UNLINK` cancellation (M5)
 are done — a fake device enumerates in `lsusb` and streams scripted input over
 the desktop harness, **so the entire USB/IP protocol is now proven with no
-Android and no hardware**. Porting to the TV (M6/M7) is next. The full design,
-protocol details, concurrency model, and the milestone plan with pass gates live
-in [`architecture.md`](architecture.md) and [`MILESTONES.md`](MILESTONES.md).
+Android and no hardware**. The M6 Host-API spike (`HostApiSpike`:
+`claimInterface(forceClaim)` on every interface + interrupt-IN read to Logcat,
+no network) **passed its L3 gate on real hardware** — a Logitech F310 was
+claimed with no root and its live input streamed to Logcat, confirming the
+no-root premise (§2). M7 (the proven server in a foreground service, real input
+over the network) is next. The full
+design, protocol details, concurrency model, and the milestone plan with pass
+gates live in [`architecture.md`](architecture.md) and
+[`MILESTONES.md`](MILESTONES.md).
 
 The build order is **testability-ordered**: the entire USB/IP protocol is proven
 locally first — codecs, then the descriptor parser, then `DEVLIST`, `IMPORT`, and
@@ -105,6 +111,58 @@ Layout: `core/` (protocol + engine, pure Java), `android/` (the TV app),
 `desktop/` (local test harness), `companion/` (optional Python PC daemon, §9),
 `testdata/` (captures). Toolchain and the full build/test guide are in
 [`DEVELOPING.md`](DEVELOPING.md).
+
+## Deploying to the TV (ADB over the network)
+
+The TV app is installed and debugged over the network with `adb` — no cable.
+One-time setup on the TV: enable **Developer options** (Settings → System →
+About → click *Build* 7×), then turn on **USB debugging** under Developer
+options. On most Android TVs that also opens network ADB on port 5555; newer
+Google TV boxes instead expose a separate **Wireless debugging** toggle that
+needs a pairing step (see below). Find the TV's IP under Settings → Network &
+Internet → your (Ethernet) connection, or the *Status* screen.
+
+```bash
+# Connect (accept the "Allow debugging?" prompt on the TV the first time)
+adb connect <tv-ip>:5555
+adb devices                     # TV should show as "device" (not "unauthorized"/"offline")
+
+# Install / update the app (reinstalls in place, keeps data; same command each time)
+./gradlew :android:installDebug
+#   or directly:
+adb install -r android/build/outputs/apk/debug/app-debug.apk
+
+# Watch the app's logs. The M6 Host-API spike logs under a single tag:
+adb logcat -c                   # clear old logs (optional)
+adb logcat -s IoTowerSpike      # follow only spike output
+#   everything from the app's process, all tags:
+adb logcat --pid=$(adb shell pidof -s com.iotower.android)
+
+# Launch / stop the app from the PC (optional)
+adb shell am start -n com.iotower.android/.MainActivity
+adb shell am force-stop com.iotower.android
+
+# List the USB devices the TV sees (handy when several are attached)
+adb shell dumpsys usb | sed -n '/USB Host State/,/^$/p'
+```
+
+**Wireless-debugging fallback.** If `adb connect <ip>:5555` is refused, the TV is
+on the newer secure flow: Developer options → **Wireless debugging → Pair device
+with pairing code**, then use the pairing host:port and 6-digit code it shows,
+and connect to the *debug* host:port (both differ from 5555):
+
+```bash
+adb pair <tv-ip>:<pairing-port>     # enter the 6-digit code
+adb connect <tv-ip>:<debug-port>
+```
+
+**Tips.** A stale connection shows as `offline` — `adb disconnect` then
+`adb connect` again clears it. DHCP can change the TV's IP after a reboot;
+reserve it on the router if you reconnect often. A signature mismatch on install
+(`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, e.g. after building on a different
+machine) needs `adb uninstall com.iotower.android` first. The full M6 test
+procedure (plug in a pad, Start, and what the spike log should show) is the L3
+gate in [`MILESTONES.md`](MILESTONES.md).
 
 ## Documentation
 
