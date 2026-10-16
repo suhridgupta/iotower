@@ -2,6 +2,8 @@ package com.iotower.core.usb;
 
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -244,5 +246,22 @@ class DescriptorParserTest {
 
         // (c) null input.
         assertThrows(IllegalArgumentException.class, () -> DescriptorParser.parse(null));
+    }
+
+    @Test
+    void parseDeviceInfoFromRealCapture() throws Exception {
+        byte[] raw = Files.readAllBytes(
+                RealCaptureTest.locateTestData("simple-gamepad-descriptors.bin"));
+
+        DeviceInfo info = DescriptorParser.parseDeviceInfo(raw, /* speed */ 2);
+
+        assertEquals(0x046d, info.idVendor, "idVendor");
+        assertEquals(0xc21d, info.idProduct, "idProduct");
+        assertEquals(0x4014, info.bcdDevice, "bcdDevice");
+        assertEquals(0xff, info.deviceClass, "deviceClass");
+        assertEquals(1, info.numConfigurations, "numConfigurations");
+        assertEquals(1, info.numInterfaces, "numInterfaces");
+        assertEquals(1, info.configurationValue, "configurationValue");
+        assertEquals(2, info.speed, "speed round-trips");
     }
 }

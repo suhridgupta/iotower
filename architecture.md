@@ -42,6 +42,12 @@ identically. Moonlight continues to carry only video/audio.
 - **Transparency over cleverness.** The server forwards raw transfers and raw
   descriptors. It contains no device tables, no VID/PID logic, no per-device
   branches. If a behavior can be pushed to the PC-side driver, it is.
+  One documented exception, forced by §2: the Android backend no-op-ACKs a
+  standard `SET_CONFIGURATION` instead of forwarding it, because the framework
+  already configured the device when we claimed it, and re-issuing it as a raw
+  control transfer resets/halts the endpoints (M7c; `core` still forwards it
+  faithfully — this lives only in `:android`, and is keyed on the standard
+  request number, not on any device identity).
 
 ---
 
@@ -218,8 +224,8 @@ mechanical — it routes by transfer type and endpoint, never by device.
 | USB/IP URB | Endpoint | Android Host API call |
 |---|---|---|
 | Control (ep0), setup[8] populated | 0 | `connection.controlTransfer(reqType, req, val, idx, buf, len, timeout)` |
-| Interrupt IN (input reports) | e.g. 0x81 | `UsbRequest.queue(buffer)` → `connection.requestWait()` |
-| Interrupt/Control OUT (FFB, rumble, LEDs) | e.g. 0x01 | `UsbRequest.queue(buffer)` on OUT ep, or `controlTransfer` |
+| Interrupt IN (input reports) | e.g. 0x81 | `connection.bulkTransfer(ep, buf, len, timeout)` — one read per client URB, demand-driven (`UsbRequest.queue()`/`requestWait()` is the async alternative) |
+| Interrupt/Control OUT (FFB, rumble, LEDs) | e.g. 0x01 | `bulkTransfer()` on the OUT ep, or `controlTransfer` for ep0 |
 | Bulk IN/OUT | any bulk ep | `bulkTransfer()` |
 | Isochronous | — | **Unsupported — out of scope** |
 
@@ -264,7 +270,7 @@ sequenceDiagram
     participant U as Device (Host API)
     K->>R: CMD_SUBMIT (seqnum, ep, dir)
     R->>E: enqueue URB
-    E->>U: controlTransfer / UsbRequest.queue
+    E->>U: controlTransfer / bulkTransfer
     U-->>E: completion (data / status)
     E->>WR: RET_SUBMIT(seqnum)
     WR->>K: serialized reply
@@ -273,14 +279,12 @@ sequenceDiagram
 - **Reader thread** — the only reader of the socket. Parses headers, reads OUT
   payloads, dispatches work. Never blocks on a transfer.
 - **Transfer engine** —
-  - *IN interrupt endpoints:* keep one or more `UsbRequest`s queued per endpoint;
-    a dedicated completion loop calls `requestWait()` and matches each finished
-    request back to its `seqnum` via `UsbRequest.setClientData()`.
+  - *IN interrupt endpoints:* the Android backend reads each endpoint **on demand** — one `bulkTransfer` per queued client URB, bound to the head URB (see `prds/m7b-interrupt-in-read-path.md`); the engine correlates each completion back to its `seqnum` via its in-flight map. (The original `UsbRequest`/`requestWait`/`setClientData` design was superseded during M7 L3 bring-up — `requestWait` masked the URB error status.)
   - *Control/bulk/OUT:* a small blocking worker pool running `controlTransfer`
     / `bulkTransfer`.
 - **Writer thread** — the *only* holder of the socket `OutputStream`, draining a
   concurrent queue. This guarantees replies never interleave on the wire.
-- **UNLINK** → `UsbRequest.cancel()` on the in-flight request, then `RET_UNLINK`.
+- **UNLINK** → `backend.cancel()` removes the pending URB and completes it `-ECONNRESET`, then `RET_UNLINK`.
 
 Correlating completions to seqnums, and handling cancel/out-of-order, is the
 main correctness challenge. Get it right on a dumb gamepad before anything
@@ -480,7 +484,9 @@ for the full plan with per-milestone test cases and pass gates.
    to Logcat; proves the no-root path (§2). *Spike (`HostApiSpike`) implemented;
    L3 gate runs on the TV.*
 7. **Android integration** — the proven server in a foreground service; a generic
-   pad's input reaches the PC over the network (§8).
+   pad's input reaches the PC over the network (§8). *Implemented:
+   `AndroidUsbBackend` fills the `UsbBackend` seam (open + forceClaim, demand-driven `bulkTransfer` reads, `submit`/`cancel`; `SET_CONFIGURATION` no-op + `ENDPOINT_HALT` recovery, M7b/M7c), `ServerService` runs
+   `UsbIpServer`; L3 hardware gate MET on the TV (2026-10-16).*
 8. **G29** — OUT transfers / FFB, composite device, reset recovery (§7).
 9. **Robustness** — reset reconnect, screen-off survival, clean disconnect, latency.
 10. **Optional PC companion** — auto-attach, auto-reattach, PIN/TLS (§9).
@@ -507,8 +513,7 @@ for the full plan with per-milestone test cases and pass gates.
 
 ## 13. Tech stack
 
-- **Java**, single Android app. `minSdk 28` (for `UsbRequest.requestWait(timeout)`
-  and saner async USB); target current. Kotlin buys little for this project — the
+- **Java**, single Android app. `minSdk 28` (modern USB Host API); target current. Kotlin buys little for this project — the
   USB Host API and socket work are the same Android calls in either language — so
   build in the JVM language you're fastest in.
 - **No NDK needed.** VirtualHere uses native C for throughput, but a single
@@ -517,7 +522,7 @@ for the full plan with per-milestone test cases and pass gates.
 - **Plain threads, not a coroutine framework.** The reader / transfer-engine /
   writer split (§5.1) is a handful of `Thread`s over `java.util.concurrent`
   primitives — a `BlockingQueue` for the writer's outbound queue and a
-  `ConcurrentHashMap` for the seqnum ↔ in-flight `UsbRequest` correlation. No
+  `ConcurrentHashMap` for the seqnum ↔ in-flight transfer correlation. No
   async library required.
 - **Guard the null-returning Host API.** `openDevice()`, `getRawDescriptors()`,
   and endpoint lookups can each return null; check every one, because a
@@ -533,7 +538,7 @@ for the full plan with per-milestone test cases and pass gates.
 |---|---|---|
 | Device reset / re-enumeration mid-session (e.g. G29 mode switch) | **High** | Detect detach, re-acquire, auto-reattach on PC; treat as core USB lifecycle, not polish |
 | Latency/jitter from naive I/O | Medium | `tcpNoDelay`, reused buffers, tight IN loop, Ethernet |
-| `UsbRequest` completion ↔ seqnum correctness, cancel, ordering | Medium | Single writer thread; `clientData` correlation; test on dumb pad first |
+| Transfer completion ↔ seqnum correctness, cancel, ordering | Medium | Single writer thread; `clientData` correlation; test on dumb pad first |
 | Foreground service killed on TV | Medium | Proper foreground service + notification; test screen-off |
 | Open USB/IP port has no auth or encryption | Medium | LAN-only by default; optional PIN/TLS proxy via the PC companion (§9) on untrusted networks |
 | Isochronous device connected | Low | Detect and refuse cleanly; document the limitation |

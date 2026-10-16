@@ -61,6 +61,9 @@ public final class TransferEngine {
     /** {@code -ECONNRESET} — status for a URB terminated by cancel (§5.1). */
     private static final int STATUS_ECONNRESET = -104;
 
+    /** M7b: gate for verbose seqnum-level URB-lifecycle logging. Flip to false to quiet. */
+    private static final boolean DEBUG = true;
+
     /** Timeout for the synchronous ep0 {@code controlTransfer} calls (§5). */
     private static final int CONTROL_TIMEOUT_MS = 5000;
 
@@ -111,6 +114,11 @@ public final class TransferEngine {
         final int direction = basic.direction;
         final int ep = basic.ep;
         inflight.put(seqnum, new Inflight(seqnum, direction, ep, null));
+        if (DEBUG) {
+            System.out.println("[iotower] CMD_SUBMIT seq=" + seqnum + " ep=" + ep
+                    + " dir=" + (direction == UsbIp.DIR_IN ? "IN" : "OUT")
+                    + " len=" + cmd.transferBufferLength);
+        }
 
         if (ep == 0) {
             controlWorkers.execute(() -> runControl(seqnum, basic, cmd, outPayload));
@@ -203,7 +211,15 @@ public final class TransferEngine {
     private void completeSubmit(int seqnum, int direction, int ep, int status, byte[] data,
             int actualLength) {
         if (inflight.remove(seqnum) == null) {
+            if (DEBUG) {
+                System.out.println("[iotower] RET_SUBMIT seq=" + seqnum + " suppressed(unlinked)");
+            }
             return; // already unlinked, or the engine is shutting down.
+        }
+        if (DEBUG) {
+            System.out.println("[iotower] RET_SUBMIT seq=" + seqnum + " ep=" + ep
+                    + " dir=" + (direction == UsbIp.DIR_IN ? "IN" : "OUT")
+                    + " status=" + status + " len=" + actualLength);
         }
         boolean withPayload = direction == UsbIp.DIR_IN && actualLength > 0 && data != null;
         int size = UsbIpHeaderBasic.BYTES + RetSubmit.BYTES + (withPayload ? actualLength : 0);
@@ -224,6 +240,10 @@ public final class TransferEngine {
      */
     public void unlink(UsbIpHeaderBasic basic, CmdUnlink cmd) {
         Inflight target = inflight.remove(cmd.unlinkSeqnum);
+        if (DEBUG) {
+            System.out.println("[iotower] CMD_UNLINK target=" + cmd.unlinkSeqnum
+                    + " found=" + (target != null));
+        }
         if (target != null && target.transfer != null) {
             try {
                 backend.cancel(target.transfer);

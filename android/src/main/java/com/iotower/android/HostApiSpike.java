@@ -41,6 +41,13 @@ import java.util.Map;
  * {@code core}; {@code core} never imports Android. Invariant 6: every
  * null-returning Host API call is guarded so the spike aborts cleanly rather
  * than crashing a long-running process.
+ *
+ * <p><b>M7 status:</b> retained as the M6 diagnostic (the M6 gate is MET and
+ * architecture.md §2 references it), but it is no longer wired into the M7
+ * server path — {@link MainActivity} drives {@link ServerService} /
+ * {@link AndroidUsbBackend} instead. Kept deliberately, not dead code by
+ * accident; see the M7 PRD's Risks/open questions for the keep-vs-remove
+ * call.
  */
 public final class HostApiSpike {
 

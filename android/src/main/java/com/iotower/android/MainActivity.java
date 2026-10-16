@@ -20,26 +20,29 @@ import android.widget.TextView;
 import java.util.Locale;
 
 /**
- * Minimal launcher UI and the driver for the M6 Host-API spike (architecture
- * §2, §8). Enumerates USB devices, runs the USB permission handshake, and
- * starts/stops {@link HostApiSpike}, which claims every interface (forceClaim)
- * and logs interrupt-IN reports to Logcat.
+ * Minimal launcher UI and the driver for the M7 server (architecture §2, §8).
+ * Enumerates USB devices, runs the USB permission handshake, and starts/stops
+ * {@link ServerService}, which claims every interface (forceClaim), builds an
+ * {@link AndroidUsbBackend}, and runs the device-agnostic {@code UsbIpServer}
+ * so a remote Linux PC can {@code usbip attach} to the device plugged into the
+ * TV.
  *
  * <p>Intentionally thin — platform widgets only, no AndroidX (§13 / Invariant
- * 5). M6 does not use the network or the foreground {@link ServerService}; that
- * is M7. The spike runs from the activity here on purpose (screen-off /
- * service survival is M9).
+ * 5). This activity only starts/stops the foreground service; it does not hold
+ * the backend or the server itself, so it does not track a dying service (M9).
  */
 public class MainActivity extends Activity {
 
     private static final String ACTION_USB_PERMISSION = "com.iotower.android.USB_PERMISSION";
+    private static final String TAG = "IoTower";
 
     private UsbManager usbManager;
-    private final HostApiSpike spike = new HostApiSpike();
 
     private TextView status;
     private Button toggle;
     private boolean receiverRegistered;
+    /** Whether this activity has asked {@link ServerService} to run. See class doc: no binding. */
+    private boolean serverStarted;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -74,7 +77,7 @@ public class MainActivity extends Activity {
 
         TextView title = new TextView(this);
         title.setTextSize(24f);
-        title.setText("I/O Tower — Host-API spike (M6)");
+        title.setText("I/O Tower — USB/IP server (M7)");
         root.addView(title);
 
         status = new TextView(this);
@@ -95,8 +98,8 @@ public class MainActivity extends Activity {
     }
 
     private void onToggle() {
-        if (spike.isRunning()) {
-            spike.stop();
+        if (serverStarted) {
+            stopServer();
             setStatus("Stopped. Device released.");
         } else {
             UsbDevice device = pickDevice();
@@ -119,7 +122,7 @@ public class MainActivity extends Activity {
 
     private void requestOrStart(UsbDevice device) {
         if (usbManager.hasPermission(device)) {
-            startSpike(device);
+            startServer(device);
         } else {
             setStatus("Requesting permission for " + name(device) + "…");
             PendingIntent pi = PendingIntent.getBroadcast(
@@ -129,10 +132,19 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void startSpike(UsbDevice device) {
-        String result = spike.start(usbManager, device);
-        setStatus(result + "\n\nWatch: adb logcat -s " + HostApiSpike.TAG);
+    private void startServer(UsbDevice device) {
+        Intent intent = new Intent(this, ServerService.class)
+                .putExtra(UsbManager.EXTRA_DEVICE, device);
+        startForegroundService(intent);
+        serverStarted = true;
+        setStatus("Serving " + name(device) + " on :3240\n\n"
+                + "From the PC: sudo usbip attach -r <tv-ip> -b 1-1");
         render();
+    }
+
+    private void stopServer() {
+        stopService(new Intent(this, ServerService.class));
+        serverStarted = false;
     }
 
     private void maybeHandleAttachIntent(Intent intent) {
@@ -140,7 +152,7 @@ public class MainActivity extends Activity {
             return;
         }
         UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
-        if (device != null && !spike.isRunning()) {
+        if (device != null && !serverStarted) {
             requestOrStart(device);
         }
     }
@@ -154,16 +166,16 @@ public class MainActivity extends Activity {
             UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
             boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
             if (granted && device != null) {
-                startSpike(device);
+                startServer(device);
             } else {
-                Log.w(HostApiSpike.TAG, "USB permission denied");
+                Log.w(TAG, "USB permission denied");
                 setStatus("USB permission denied for " + name(device));
             }
         }
     };
 
     private void render() {
-        toggle.setText(spike.isRunning() ? "Stop" : "Start");
+        toggle.setText(serverStarted ? "Stop" : "Start");
     }
 
     private void setStatus(String text) {
@@ -183,7 +195,6 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        spike.stop();
         if (receiverRegistered) {
             unregisterReceiver(usbReceiver);
             receiverRegistered = false;
