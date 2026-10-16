@@ -3,6 +3,22 @@
 > Written by the design (Opus) pass; implemented by the build (Sonnet) pass.
 > Spec only — no code here. Reference architecture sections as "§N".
 
+> **Amendment (2026-10-16) — read path superseded; L3 gate MET.** The interrupt-IN
+> read mechanism specified below (a single `UsbRequest` + `requestWait` dispatcher
+> correlating completions by `setClientData`) was **superseded during L3 bring-up**:
+> `requestWait` masked a URB error status that turned out to be the whole bug. The
+> shipped design reads each interrupt-IN endpoint **on demand** with `bulkTransfer`,
+> one read bound to each client URB (**M7b**, `prds/m7b-interrupt-in-read-path.md`),
+> and no-op-ACKs the device's redundant `SET_CONFIGURATION` plus clears
+> `ENDPOINT_HALT` on a stalled read (**M7c**, `prds/m7c-interrupt-in-endpoint-halt.md`).
+> Everything else here — the `open`/forceClaim factory, the endpoint map,
+> `deviceInfo()` via `DescriptorParser.parseDeviceInfo`, `ServerService`,
+> `MainActivity`, the invariants, and the L1 test — was implemented as written.
+> **The L3 gate is MET** (2026-10-16): `evtest` on the PC shows live F310 input over
+> the network. Known follow-ups: a ~24 s first-attach stall and a post-unplug reader
+> busy-loop. Read the Approach's read-path steps (submit/dispatcher/cancel) as the
+> historical design, not the shipped one.
+
 ## Milestone / context
 
 MILESTONES.md **M7 — Android integration (first true end-to-end)**. This is the
@@ -23,8 +39,7 @@ Architecture sections in play:
   (§4.2).
 - **§5 & §5.1** — the URB → Host API mapping table and the reader → engine →
   writer concurrency model. M7 supplies the bottom row of that table on Android:
-  ep0 via `controlTransfer` (already wired), interrupt/bulk IN/OUT via
-  `UsbRequest.queue()` / `requestWait()`, correlated back by `setClientData`.
+  ep0 via `controlTransfer` (already wired), interrupt/bulk IN/OUT via `bulkTransfer` (IN read on demand, one per client URB — see the Amendment; the `UsbRequest`/`setClientData` wording below is the superseded design).
 - **§8** — Android lifecycle: foreground service, USB permission handshake,
   attach broadcast.
 
@@ -347,8 +362,7 @@ implementer believes one is needed, **stop and flag**.
      the notification clears; the TV can be Started again.
   - **Pass:** a real device's input appears on the PC over the network via the
     TV (the MILESTONES.md M7 gate), and the session stays up under continuous
-    input. Mirror the M6 framing: **code complete; L3 hardware gate pending, run
-    by the user** — the authoring environment has no Android SDK / no TV.
+    input. Mirror the M6 framing: **L3 hardware gate MET on hardware by the user (2026-10-16)** — the authoring environment has no Android SDK / no TV.
 
 ## Pass gate
 

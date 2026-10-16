@@ -70,13 +70,7 @@ Android and no hardware**. The M6 Host-API spike (`HostApiSpike`:
 `claimInterface(forceClaim)` on every interface + interrupt-IN read to Logcat,
 no network) **passed its L3 gate on real hardware** — a Logitech F310 was
 claimed with no root and its live input streamed to Logcat, confirming the
-no-root premise (§2). M7 wires that proven server into the foreground `ServerService` behind a real
-`AndroidUsbBackend` — Host-API `submit`/`cancel` on interrupt/bulk endpoints and
-a single `requestWait` dispatcher — so a generic pad plugged into the TV reaches
-the PC over the network; it is **code complete, with its L3 hardware gate
-(`usbip attach` → `evtest`) pending on the TV** (as with M6, the authoring
-environment has no Android SDK or TV). M8 (the G29: OUT/FFB, composite device,
-reset recovery) is next. The full
+no-root premise (§2). M7 wires that proven server into the foreground `ServerService` behind a real `AndroidUsbBackend` — Host-API `submit`/`cancel` on interrupt/bulk endpoints, reading each interrupt-IN endpoint on demand (one `bulkTransfer` bound to each client URB), with the device's redundant `SET_CONFIGURATION` no-op-ACKed and `CLEAR_FEATURE(ENDPOINT_HALT)` recovery on a stalled read — so a generic pad plugged into the TV reaches the PC over the network. **Its L3 hardware gate passed on the TV (2026-10-16):** `usbip attach` from Fedora, then live F310 input in `evtest`. M8 (the G29: OUT/FFB, composite device, reset recovery) is next. The full
 design, protocol details, concurrency model, and the milestone plan with pass
 gates live in [`architecture.md`](architecture.md) and
 [`MILESTONES.md`](MILESTONES.md).
