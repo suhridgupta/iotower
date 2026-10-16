@@ -24,33 +24,69 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * {@link UsbBackend} backed by the Android USB Host API (§2, §5). This is the
  * only class that touches real USB hardware; everything above it is plain Java.
  *
- * <p><b>EXPERIMENT (M7 bring-up):</b> interrupt/bulk-IN reads use the
- * <em>synchronous</em> {@link UsbDeviceConnection#bulkTransfer} instead of
- * {@code UsbRequest}/{@code requestWait}. Rationale: with {@code requestWait} the
- * IN reads complete with 0 bytes once a USB/IP client attaches (see
- * bugs/m7-interrupt-in-empty-reports.md), and {@code requestWait} hides the URB
- * status — {@code bulkTransfer} returns the byte count or {@code -1} on
- * error/timeout, so it distinguishes "errored" from "empty" and may deliver the
- * report outright. One dedicated reader thread per IN endpoint loops
- * {@code bulkTransfer} and hands each non-empty read to the oldest waiting client
- * URB. OUT also uses {@code bulkTransfer} (worker pool); ep0 uses
- * {@link #controlTransfer}. Device-agnostic (Invariant 1); {@code core} stays
- * Android-free (Invariant 2); failures are reported as {@code -ECONNRESET}
- * (Invariant 6).
+ * <p><b>Read path (M7b — demand-driven):</b> interrupt/bulk-IN reads use the
+ * <em>synchronous</em> {@link UsbDeviceConnection#bulkTransfer} (it returns the
+ * byte count, or {@code -1} on error/timeout, so error is distinguishable from
+ * empty — which {@code UsbRequest}/{@code requestWait} hid), but — unlike the
+ * earlier free-running experiment — a read is issued <em>only when a client IN
+ * URB is waiting</em>, and each read is bound 1:1 to the head URB. One worker
+ * thread per IN endpoint owns all reads for that endpoint (single-threaded
+ * endpoint access) and a FIFO of outstanding {@link UsbTransfer} URBs:
+ * <ul>
+ *   <li>{@code n > 0}: complete the head URB with the report (a success is never
+ *       read with no URB to receive it, so it cannot be dropped);</li>
+ *   <li>{@code n == 0} (timeout / NAK — on-change endpoint had nothing): keep the
+ *       URB queued and re-poll; it legitimately stays pending, as on real
+ *       hardware, until data or a client {@code CMD_UNLINK};</li>
+ *   <li>{@code n < 0} (device/endpoint error): complete the head URB with
+ *       {@code -EPIPE} and back off briefly so a persistently erroring endpoint
+ *       cannot busy-spin.</li>
+ * </ul>
+ * OUT uses {@code bulkTransfer} on a worker pool; ep0 uses
+ * {@link #controlTransfer}.
+ *
+ * <p><b>Endpoint-halt handling (M7c):</b> the Android framework already
+ * {@code SET_CONFIGURATION}s the device when we claim it at {@link #open}, so
+ * re-forwarding the client's {@code SET_CONFIGURATION} as a raw control transfer
+ * resets/halts the endpoints; {@link #controlTransfer} therefore no-op-ACKs it
+ * instead of forwarding. As a backstop, an IN read error triggers a rate-limited
+ * {@code CLEAR_FEATURE(ENDPOINT_HALT)} on that endpoint so a subsequent read can
+ * recover. Both decide by standard request number only — no VID/PID (Invariant 1).
+ *
+ * <p>Device-agnostic (Invariant 1); {@code core} stays
+ * Android-free (Invariant 2); cancel/close report {@code -ECONNRESET}
+ * (Invariant 6). Diagnostics are gated behind {@link #DEBUG}
+ * (see bugs/m7-interrupt-in-empty-reports.md and prds/m7b-interrupt-in-read-path.md).
  */
 public final class AndroidUsbBackend implements UsbBackend {
 
     private static final String TAG = "IoTowerBackend";
+
+    /** Toggle for the verbose M7b URB-lifecycle diagnostics. Flip to false to quiet. */
+    private static final boolean DEBUG = true;
+
+    /** {@code -ECONNRESET}: a URB terminated by cancel/close. */
     private static final int STATUS_ECONNRESET = -104;
+    /** {@code -EPIPE}: a device/endpoint read error (USB stall / endpoint error). */
+    private static final int STATUS_EPIPE = -32;
+
     private static final int OUT_TIMEOUT_MS = 1000;
-    /** IN read timeout: bounds how often each reader thread rechecks {@code running}. */
+    /** IN read timeout: bounds how often each reader rechecks state when a URB is pending. */
     private static final int READ_TIMEOUT_MS = 200;
+    /** Backoff after a read error, so a stalled endpoint cannot busy-spin. */
+    private static final int ERROR_BACKOFF_MS = 10;
+
+    /**
+     * m7c: how often to attempt ENDPOINT_HALT recovery while an IN endpoint keeps
+     * erroring. Rate-limits the control transfer so ep0 is not flooded (the first
+     * error fires immediately; then at most once per interval).
+     */
+    private static final int HALT_CLEAR_INTERVAL_MS = 1000;
 
     /**
      * USB full-speed, matching what {@code FakeUsbBackend} advertises. No Host
@@ -63,14 +99,12 @@ public final class AndroidUsbBackend implements UsbBackend {
     private final List<UsbInterface> claimedInterfaces;
     private final Map<Integer, UsbEndpoint> endpoints;
 
-    /** One reader (endpoint + waiter FIFO + thread) per interrupt/bulk-IN endpoint. */
+    /** One reader (endpoint + URB FIFO + worker thread) per interrupt/bulk-IN endpoint. */
     private final Map<Integer, EndpointReader> readers = new HashMap<>();
+    /** Guards every {@link EndpointReader#urbs} queue and gates its worker. */
     private final Object inLock = new Object();
     private final ExecutorService outWorkers =
             Executors.newFixedThreadPool(2, named("iotower-usb-out"));
-
-    private final AtomicLong reads = new AtomicLong();
-    private final AtomicLong diag = new AtomicLong();
 
     private volatile boolean running;
 
@@ -115,7 +149,8 @@ public final class AndroidUsbBackend implements UsbBackend {
         this.endpoints = endpoints;
         this.running = true;
 
-        // One reader thread per interrupt/bulk-IN endpoint (bulkTransfer is blocking).
+        // One worker thread per interrupt/bulk-IN endpoint. Routing is by
+        // (direction == IN, type == interrupt|bulk) only — never by VID/PID.
         for (UsbEndpoint ep : endpoints.values()) {
             boolean in = ep.getDirection() == UsbConstants.USB_DIR_IN;
             boolean pollable = ep.getType() == UsbConstants.USB_ENDPOINT_XFER_INT
@@ -152,8 +187,53 @@ public final class AndroidUsbBackend implements UsbBackend {
     @Override
     public int controlTransfer(int requestType, int request, int value, int index,
                                byte[] buffer, int length, int timeoutMillis) {
-        return connection.controlTransfer(requestType, request, value, index,
-                buffer, length, timeoutMillis);
+        // m7c: the Android framework already SET_CONFIGURATION'd the device when we
+        // claimed it at open() (§2); re-forwarding the client's SET_CONFIGURATION
+        // as a raw control transfer resets/halts the endpoints (see
+        // bugs/m7-interrupt-in-empty-reports.md). ACK it as a no-op success instead
+        // of forwarding. Protocol-generic (standard request number, no VID/PID):
+        // Invariant 1 holds; this is an Android-host config quirk, kept in :android.
+        // The ctrl line is still logged (step-1 diagnostic) so the attach sequence
+        // is visible and correlates with the IN URB outcomes.
+        boolean setConfig = (requestType & 0xFF) == 0x00 && (request & 0xFF) == 0x09;
+        int ret = setConfig
+                ? 0
+                : connection.controlTransfer(requestType, request, value, index,
+                        buffer, length, timeoutMillis);
+        if (DEBUG) {
+            Log.i(TAG, String.format(
+                    "ctrl bmRequestType=0x%02x bRequest=0x%02x(%s) wValue=0x%04x wIndex=0x%04x wLength=%d -> ret=%d%s",
+                    requestType & 0xFF, request & 0xFF, stdRequestName(requestType, request),
+                    value & 0xFFFF, index & 0xFFFF, length, ret,
+                    setConfig ? " [intercepted: already configured]" : ""));
+        }
+        return ret;
+    }
+
+    /**
+     * Short label for a USB control request, for the diagnostic log above.
+     * Standard requests (type field == 0) are named; class/vendor requests are
+     * tagged by type only. Protocol-generic — no device specifics (Invariant 1).
+     */
+    private static String stdRequestName(int bmRequestType, int bRequest) {
+        int type = (bmRequestType >> 5) & 0x03; // 0=standard, 1=class, 2=vendor
+        if (type == 1) return "class";
+        if (type == 2) return "vendor";
+        if (type == 3) return "reserved";
+        switch (bRequest & 0xFF) {
+            case 0x00: return "GET_STATUS";
+            case 0x01: return "CLEAR_FEATURE";
+            case 0x03: return "SET_FEATURE";
+            case 0x05: return "SET_ADDRESS";
+            case 0x06: return "GET_DESCRIPTOR";
+            case 0x07: return "SET_DESCRIPTOR";
+            case 0x08: return "GET_CONFIGURATION";
+            case 0x09: return "SET_CONFIGURATION";
+            case 0x0a: return "GET_INTERFACE";
+            case 0x0b: return "SET_INTERFACE";
+            case 0x0c: return "SYNCH_FRAME";
+            default:   return "std?";
+        }
     }
 
     @Override
@@ -169,7 +249,7 @@ public final class AndroidUsbBackend implements UsbBackend {
         return submitOut(endpoint, buffer, length);
     }
 
-    /** IN: register a waiter; the endpoint's reader thread delivers the next non-empty read. */
+    /** IN: enqueue a URB on its endpoint's FIFO and wake the worker; it drives one read per URB. */
     private UsbTransfer submitIn(int endpointAddress) {
         synchronized (inLock) {
             EndpointReader r = readers.get(endpointAddress);
@@ -178,7 +258,15 @@ public final class AndroidUsbBackend implements UsbBackend {
                 return null;
             }
             UsbTransfer transfer = new UsbTransfer(null);
-            r.waiters.addLast(transfer);
+            r.urbs.addLast(transfer);
+            if (r.urbs.size() > r.maxDepth) {
+                r.maxDepth = r.urbs.size();
+            }
+            if (DEBUG) {
+                Log.i(TAG, "urbIN ep=0x" + Integer.toHexString(endpointAddress)
+                        + " submit depth=" + r.urbs.size());
+            }
+            inLock.notifyAll();
             return transfer;
         }
     }
@@ -209,9 +297,11 @@ public final class AndroidUsbBackend implements UsbBackend {
         if (transfer == null) {
             return;
         }
+        int addr = -1;
         synchronized (inLock) {
             for (EndpointReader r : readers.values()) {
-                if (r.waiters.remove(transfer)) {
+                if (r.urbs.remove(transfer)) {
+                    addr = r.address;
                     break;
                 }
             }
@@ -219,21 +309,27 @@ public final class AndroidUsbBackend implements UsbBackend {
         if (!transfer.completion.isDone()) {
             transfer.completion.complete(new UsbTransfer.Result(STATUS_ECONNRESET, null, 0));
         }
+        if (DEBUG && addr >= 0) {
+            Log.i(TAG, "urbIN ep=0x" + Integer.toHexString(addr) + " cancel");
+        }
     }
 
     @Override
     public void close() {
         running = false;
+        synchronized (inLock) {
+            inLock.notifyAll(); // wake any worker blocked waiting for a URB
+        }
         outWorkers.shutdownNow();
-        // Fail any pending waiters.
+        // Fail any still-queued URBs.
         synchronized (inLock) {
             for (EndpointReader r : readers.values()) {
-                for (UsbTransfer waiter : r.waiters) {
-                    if (!waiter.completion.isDone()) {
-                        waiter.completion.complete(new UsbTransfer.Result(STATUS_ECONNRESET, null, 0));
+                for (UsbTransfer urb : r.urbs) {
+                    if (!urb.completion.isDone()) {
+                        urb.completion.complete(new UsbTransfer.Result(STATUS_ECONNRESET, null, 0));
                     }
                 }
-                r.waiters.clear();
+                r.urbs.clear();
             }
         }
         for (UsbInterface intf : claimedInterfaces) {
@@ -254,35 +350,142 @@ public final class AndroidUsbBackend implements UsbBackend {
         }
     }
 
-    /** Dedicated per-endpoint reader: blocking {@code bulkTransfer} loop. */
+    /**
+     * Per-endpoint worker: read only while a client URB is waiting, binding each
+     * {@code bulkTransfer} to the head URB. See the class Javadoc for the n>0 /
+     * n==0 / n<0 handling.
+     */
     private void readLoop(EndpointReader r) {
-        int max = Math.max(1, r.endpoint.getMaxPacketSize());
-        byte[] buf = new byte[max];
         while (running) {
+            synchronized (inLock) {
+                while (running && r.urbs.isEmpty()) {
+                    try {
+                        inLock.wait(1000); // periodic wake to recheck running
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+                if (!running) {
+                    return;
+                }
+            }
+
             int n;
             try {
-                n = connection.bulkTransfer(r.endpoint, buf, buf.length, READ_TIMEOUT_MS);
+                n = connection.bulkTransfer(r.endpoint, r.buf, r.buf.length, READ_TIMEOUT_MS);
             } catch (RuntimeException e) {
                 if (!running) {
-                    break;
+                    return;
                 }
-                continue;
+                n = -1;
             }
-            long total = reads.incrementAndGet();
-            if (diag.incrementAndGet() <= 12 || total % 500 == 0) {
-                Log.i(TAG, "bulkRead ep=0x" + Integer.toHexString(r.address) + " n=" + n
-                        + " waiters=" + r.waiters.size() + " (#" + total + ")");
-            }
+
+            r.reads++;
             if (n > 0) {
-                UsbTransfer waiter;
+                r.ok++;
+                r.consecErr = 0;
+                UsbTransfer w;
                 synchronized (inLock) {
-                    waiter = r.waiters.pollFirst();
+                    w = r.urbs.pollFirst();
                 }
-                if (waiter != null && !waiter.completion.isDone()) {
-                    waiter.completion.complete(new UsbTransfer.Result(0, Arrays.copyOf(buf, n), n));
+                if (w != null && !w.completion.isDone()) {
+                    w.completion.complete(new UsbTransfer.Result(0, Arrays.copyOf(r.buf, n), n));
+                    if (DEBUG) {
+                        Log.i(TAG, "urbIN ep=0x" + Integer.toHexString(r.address)
+                                + " deliver n=" + n + " depth=" + depthOf(r));
+                    }
                 }
+            } else if (n == 0) {
+                r.timeouts++;
+                // On-change endpoint had nothing; keep the URB queued and re-poll.
+            } else {
+                r.errs++;
+                r.consecErr++;
+                // m7c: a read error means the endpoint likely stalled — clear
+                // ENDPOINT_HALT so a subsequent read can succeed. Rate-limited so
+                // ep0 is not flooded (first error fires immediately, then ~1/s).
+                long now = System.currentTimeMillis();
+                if (now - r.lastHaltClearMs >= HALT_CLEAR_INTERVAL_MS) {
+                    int cr = clearEndpointHalt(r.address);
+                    r.lastHaltClearMs = now;
+                    if (DEBUG) {
+                        Log.i(TAG, "urbIN ep=0x" + Integer.toHexString(r.address)
+                                + " clearHalt(ENDPOINT_HALT) -> ret=" + cr);
+                    }
+                }
+                UsbTransfer w;
+                synchronized (inLock) {
+                    w = r.urbs.pollFirst();
+                }
+                if (w != null && !w.completion.isDone()) {
+                    w.completion.complete(new UsbTransfer.Result(STATUS_EPIPE, null, 0));
+                }
+                if (DEBUG && (r.consecErr <= 5 || r.errs % 500 == 0)) {
+                    Log.i(TAG, "urbIN ep=0x" + Integer.toHexString(r.address)
+                            + " error status=" + STATUS_EPIPE + " consec=" + r.consecErr
+                            + " depth=" + depthOf(r));
+                }
+                sleep(ERROR_BACKOFF_MS);
             }
-            // n <= 0: timeout / no data / error — loop and recheck `running`.
+            maybeSummary(r);
+        }
+    }
+
+    private int depthOf(EndpointReader r) {
+        synchronized (inLock) {
+            return r.urbs.size();
+        }
+    }
+
+    /** Emit a 1 Hz per-endpoint throughput summary (the key M7b instrument). */
+    private void maybeSummary(EndpointReader r) {
+        if (!DEBUG) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - r.lastSummaryMs < 1000) {
+            return;
+        }
+        int depth;
+        int maxDepth;
+        synchronized (inLock) {
+            depth = r.urbs.size();
+            maxDepth = r.maxDepth;
+            r.maxDepth = depth;
+        }
+        Log.i(TAG, "urbIN ep=0x" + Integer.toHexString(r.address) + " 1s reads=" + r.reads
+                + " ok=" + r.ok + " timeout=" + r.timeouts + " err=" + r.errs
+                + " depth=" + depth + " maxDepth=" + maxDepth);
+        r.reads = 0;
+        r.ok = 0;
+        r.timeouts = 0;
+        r.errs = 0;
+        r.lastSummaryMs = now;
+    }
+
+    /**
+     * m7c: issue a standard {@code CLEAR_FEATURE(ENDPOINT_HALT)} on {@code
+     * endpointAddress} (USB stall recovery). Runs on the reader thread; short
+     * timeout, best-effort. Returns the control-transfer result ({@code 0} = ok).
+     */
+    private int clearEndpointHalt(int endpointAddress) {
+        try {
+            // bmRequestType=0x02 (OUT, standard, recipient=endpoint),
+            // bRequest=0x01 (CLEAR_FEATURE), wValue=0x0000 (ENDPOINT_HALT),
+            // wIndex=endpoint address, no data.
+            return connection.controlTransfer(0x02, 0x01, 0x0000, endpointAddress,
+                    null, 0, READ_TIMEOUT_MS);
+        } catch (RuntimeException e) {
+            return -1;
+        }
+    }
+
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -295,16 +498,30 @@ public final class AndroidUsbBackend implements UsbBackend {
         };
     }
 
-    /** One interrupt/bulk-IN endpoint: its waiter FIFO and dedicated reader thread. */
+    /** One interrupt/bulk-IN endpoint: its URB FIFO, read buffer, worker and diagnostics. */
     private static final class EndpointReader {
         final int address;
         final UsbEndpoint endpoint;
-        final ArrayDeque<UsbTransfer> waiters = new ArrayDeque<>();
+        final ArrayDeque<UsbTransfer> urbs = new ArrayDeque<>();
+        final byte[] buf;
         Thread thread;
+
+        // Diagnostics: interval counters mutated only by the worker thread;
+        // maxDepth is updated under inLock by submitIn and the summary.
+        long reads;
+        long ok;
+        long timeouts;
+        long errs;
+        long consecErr;
+        int maxDepth;
+        long lastSummaryMs;
+        long lastHaltClearMs; // m7c: 0 => first read error clears the halt immediately
 
         EndpointReader(int address, UsbEndpoint endpoint) {
             this.address = address;
             this.endpoint = endpoint;
+            this.buf = new byte[Math.max(1, endpoint.getMaxPacketSize())];
+            this.lastSummaryMs = System.currentTimeMillis();
         }
     }
 }

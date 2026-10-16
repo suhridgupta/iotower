@@ -42,6 +42,12 @@ identically. Moonlight continues to carry only video/audio.
 - **Transparency over cleverness.** The server forwards raw transfers and raw
   descriptors. It contains no device tables, no VID/PID logic, no per-device
   branches. If a behavior can be pushed to the PC-side driver, it is.
+  One documented exception, forced by §2: the Android backend no-op-ACKs a
+  standard `SET_CONFIGURATION` instead of forwarding it, because the framework
+  already configured the device when we claimed it, and re-issuing it as a raw
+  control transfer resets/halts the endpoints (M7c; `core` still forwards it
+  faithfully — this lives only in `:android`, and is keyed on the standard
+  request number, not on any device identity).
 
 ---
 

@@ -1,6 +1,7 @@
 # BUG: M7 — interrupt-IN input reports arrive empty (len=0) once a USB/IP client is attached
 
-> Status: **OPEN** — blocks the M7 L3 gate. Discovered during M7 hardware
+> Status: **RESOLVED** (2026-10-16) — fixed by M7b (demand-driven reads) + M7c
+> (SET_CONFIGURATION no-op + ENDPOINT_HALT recovery). M7 L3 gate MET. Discovered during M7 hardware
 > bring-up (2026-09-23). Code changes made while investigating are **uncommitted**
 > (the committed M7 baseline is `75a691a`; the working tree carries the diagnostic
 > reader-pump backend described below).
@@ -331,3 +332,86 @@ fine (probe reads 20 bytes) until the client drives it.
     is a genuine fix worth keeping** regardless of the read-path outcome.
   - `bugs/m7-interrupt-in-empty-reports.md` — this document.
 - `:core` is untouched throughout; `./gradlew :core:test` stays green.
+
+
+---
+
+## Live session log (continued 2026-10-04)
+
+### Experiment 2 RESULT — the endpoint is NOT dead; the read path was dropping data
+Full logcat of an attach captured on the TV (control-transfer logging from step 1
+was in the build). Findings that **overturn the "endpoint permanently halted"
+hypothesis**:
+- **A real 20-byte report came through after attach:** `bulkRead ep=0x81 n=20
+  waiters=0 (#1000)`. `bulkTransfer` *can* read `0x81` once the client drives it.
+- **It was dropped** — `waiters=0`. The free-running reader discarded any `n>0`
+  read that completed with no client URB queued.
+- **Busy-spin:** once erroring, reads returned `-1` immediately — ~120k reads/s
+  (`#1000` -> `#2.65M` in ~22 s), no backoff.
+- **Orphaned IN URBs:** IN URBs were only ever answered on a *success*, so the
+  client's URBs that didn't coincide with one were never completed. `waiters` was
+  `0` almost the entire log (`=1` once).
+- **Control traffic on attach:** only `SET_CONFIGURATION(1)` (x29, every `ret=0`)
+  and an XInput class-init request (succeeds). No `SET_INTERFACE`, no
+  `CLEAR_FEATURE`.
+
+### Fix (M7b) — demand-driven read path + full instrumentation
+Redesigned the interrupt/bulk-IN read path (see
+`prds/m7b-interrupt-in-read-path.md`): one worker per IN endpoint reads **only
+when a client URB is queued**, binding each `bulkTransfer` 1:1 to the head URB —
+`n>0` completes that URB (no dropped success), `n==0` keeps it pending (correct
+on-change semantics), `n<0` completes it `-EPIPE` + backoff (no spin). Added
+seqnum-level engine logging (`CMD_SUBMIT`/`RET_SUBMIT`/`CMD_UNLINK`) and a 1 Hz
+per-endpoint backend summary to localise the fault on the next run. Endpoint-halt
+recovery (`CLEAR_FEATURE`) and `SET_CONFIGURATION` interception remain a follow-up
+once the logs confirm the trigger. L3 hardware gate pending.
+
+
+---
+
+## Live session log (continued 2026-10-16, second run)
+
+### M7b verified; fault isolated to an endpoint halt
+With the demand-driven read path deployed, the log showed the read path is
+correct: `urbIN ep=0x81 1s reads=50 ok=0 timeout=0 err=50 depth=1` steady — no
+spin (was ~120k/s), client IN URBs arrive and are held (`depth=1`), and every IN
+URB is answered (8533 `RET_SUBMIT dir=IN status=-32`; stock `usbip` tolerates the
+`-EPIPE` flood and keeps re-driving — the PRD's `-EPIPE` risk is resolved).
+
+The remaining fault is now unambiguous: every `0x81` read returns an **immediate
+`-32` error — never a timeout, never a success**. A healthy idle interrupt
+endpoint would time out (`n=0`); immediate error = **halted**. The stall begins
+the instant the forwarded `SET_CONFIGURATION(1)` lands:
+```
+19:48:51.827  ctrl ... bRequest=0x09(SET_CONFIGURATION) wValue=0x0001 -> ret=0
+19:48:51.991  urbIN ep=0x81 error status=-32 consec=1
+```
+Only 2 `SET_CONFIGURATION`s this run (vs 29 earlier) — because the client's URBs
+are now answered, xpad no longer re-configures in a tight retry loop. No
+`SET_INTERFACE`, no `CLEAR_FEATURE` from the client.
+
+### Fix (M7c) — prevent + recover
+Android already configured the device at `claimInterface` (§2), so the backend
+now **no-op-ACKs `SET_CONFIGURATION`** rather than forwarding the raw reset
+(`prds/m7c-interrupt-in-endpoint-halt.md`), and, as a backstop, issues a
+rate-limited `CLEAR_FEATURE(ENDPOINT_HALT)` on `0x81` whenever a read errors.
+Both decide by standard request number only (Invariant 1). L3 hardware gate
+pending.
+
+
+---
+
+## RESOLVED (2026-10-16)
+
+Verified on hardware: `evtest` on the PC logged 3,160 live F310 events over the
+network (first event 20:02:39.99, exactly when the backend began delivering);
+the backend streamed reports (`ok` up to ~208/s) with the `SET_CONFIGURATION`
+no-op active and no spin. The M7 L3 gate is MET.
+
+Known rough edges, left for follow-up (not blockers):
+1. **~24 s post-attach stall** — after attach the endpoint errored (~5/s,
+   `clearHalt -> ret=0`) for ~24 s before reports began flowing. Interception +
+   halt-clear recover, but slowly; worth tightening (logs retained).
+2. **Post-unplug busy-loop** — once the device is physically removed, the reader
+   spins (~96/s) on immediate `-1` with `clearHalt -> ret=-1`. Detect a gone
+   device and park the reader (fits the §7 / M8 reset-recovery work).
