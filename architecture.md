@@ -333,6 +333,15 @@ concession to the physical world.
   interface, map every endpoint (§5), and route by endpoint. Do that and
   multi-interface devices work without special handling.
 
+> **Implementation status (M8).** Reset/re-enumeration recovery is implemented as
+> detect-and-reconnect (§8): the TV catches `ACTION_USB_DEVICE_DETACHED` for the
+> served device, releases it, and re-claims it on reappearance; the PC re-runs
+> `usbip attach` (manual re-attach, per the M8 gate). The G29 passes through in PC
+> mode (`c24f`) with force feedback, composite interfaces and all. One caveat
+> lives on the PC: the stock `vhci-hcd` client can wedge after an abrupt
+> disconnect (`usbip: error: open vhci_driver`) and needs a module reload before
+> the re-attach -- a client-side fragility the §9 companion (M10) automates.
+
 ---
 
 ## 8. Android lifecycle
@@ -346,6 +355,19 @@ concession to the physical world.
   claim/reconnect (this is also your reset-recovery hook from §7).
 - Screen-off on the TV must not suspend the service — the foreground service
   plus CPU wake handling covers this; test it, since TV firmware varies.
+
+> **Implementation status (§8 lifecycle, M8).** `MainActivity` registers a
+> runtime `ACTION_USB_DEVICE_ATTACHED` receiver (alongside the manifest
+> intent-filter for cold launch) and claims the **attached** device directly, so
+> a replug or a re-enumeration is re-claimed rather than left to the kernel input
+> driver (the cause of the TV "scroll"); `forceClaim` then detaches it. Device
+> selection stays device-agnostic: the attach intent names the exact device, and
+> when choosing without one the app claims the *sole* connected device and
+> refuses to guess among several -- a TV has its own internal USB devices (a
+> Realtek Bluetooth/Wi-Fi combo), so "take the first" would claim the wrong one.
+> `ServerService` restarts cleanly for a new/re-enumerated device (teardown +
+> re-claim), serialized so a rapid re-attach can't race. The first grant needs a
+> one-time USB-permission prompt; after that it auto-claims on attach.
 
 ---
 
