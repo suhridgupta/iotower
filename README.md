@@ -97,6 +97,31 @@ Detach when done (find the port with `usbip port`):
 sudo usbip detach -p <port>
 ```
 
+### Reconnecting after a detach or mode switch
+
+When the wheel is unplugged (or re-enumerates), I/O Tower on the TV releases it
+and **re-claims it automatically on replug** -- you don't touch the app. On the
+PC, just re-attach:
+
+```bash
+sudo usbip attach -r <tv-ip> -b <busid>
+```
+
+The stock Linux `vhci-hcd` client often wedges after an abrupt disconnect, so if
+`usbip attach` (or even `usbip port`) fails with `usbip: error: open vhci_driver`,
+reset the client module and retry:
+
+```bash
+sudo modprobe -r vhci-hcd        # if this says "in use", reboot the PC to clear it
+sudo modprobe vhci-hcd
+sudo usbip attach -r <tv-ip> -b <busid>
+```
+
+Automating this -- keeping `vhci-hcd` healthy and re-attaching hands-off after a
+drop -- is the job of the optional PC companion (architecture.md §9, milestone
+M10); this manual sequence is the interim, and the basis for that future
+server-side reconnect script.
+
 If the wheel binds as `hid-generic` even in PC mode, install the `new-lg4ff`
 driver (FF-capable Logitech HID) and Oversteer per their docs.
 
@@ -115,8 +140,9 @@ no-root premise (§2). M7 wires that proven server into the foreground `ServerSe
 endpoint error; a post-unplug busy-loop). **M8 is largely proven (2026-10-19):**
 a Logitech G29 in **PC mode** passes through to Fedora, where `new-lg4ff` binds
 and **force feedback drives the wheel** via Oversteer -- OUT transfers and the
-2-interface composite both carried with no device-specific code. The mode-switch
-reset-recovery is the remaining M8 item. See "Running a Logitech G29" below. The full
+2-interface composite both carried with no device-specific code. Reset recovery works too: on a detach the TV releases the wheel and re-claims it
+on replug, and the PC re-attaches with `usbip attach` (reloading `vhci-hcd` if the
+stock client wedges). **M8 is complete.** See "Running a Logitech G29" below. The full
 design, protocol details, concurrency model, and the milestone plan with pass
 gates live in [`architecture.md`](architecture.md) and
 [`MILESTONES.md`](MILESTONES.md).

@@ -36,7 +36,7 @@ public class MainActivity extends Activity {
     private static final String ACTION_USB_PERMISSION = "com.iotower.android.USB_PERMISSION";
     private static final String TAG = "IoTower";
     /** Visible build stamp -- bump on each change to confirm the TV is running new code. */
-    private static final String BUILD_ID = "2026-10-19 r5 (m7d + auto-claim + device-select + attach-receiver)";
+    private static final String BUILD_ID = "2026-10-19 r6 (m7d + auto-claim + device-select + attach/detach lifecycle)";
 
     private UsbManager usbManager;
 
@@ -61,11 +61,12 @@ public class MainActivity extends Activity {
         } else {
             registerReceiver(usbReceiver, new IntentFilter(ACTION_USB_PERMISSION));
         }
-        IntentFilter attachFilter = new IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED);
+        IntentFilter usbFilter = new IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED);
+        usbFilter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(attachReceiver, attachFilter, Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(attachReceiver, usbFilter, Context.RECEIVER_NOT_EXPORTED);
         } else {
-            registerReceiver(attachReceiver, attachFilter);
+            registerReceiver(attachReceiver, usbFilter);
         }
         receiverRegistered = true;
 
@@ -225,28 +226,44 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Runtime receiver for USB attach while the app is running (replug / a wheel
-     * re-enumerating). The manifest intent-filter only covers a cold launch; this
-     * catches attaches the running activity would otherwise miss. Re-claims the
-     * newest device (incl. a re-enumeration), ignoring only an exact duplicate of
-     * what we are already serving.
+     * Runtime receiver for USB attach/detach while the app is running (§7/§8 reset
+     * recovery). The manifest intent-filter only covers a cold launch; this catches
+     * events the running activity would otherwise miss.
+     *
+     * <ul>
+     *   <li><b>attach</b> -- claim the newest device (incl. a re-enumeration),
+     *       ignoring only an exact duplicate of what we are already serving;</li>
+     *   <li><b>detach</b> of the <em>served</em> device (unplug or a mode-switch
+     *       re-enumeration) -- release it cleanly and go idle, so its reappearance
+     *       is re-claimed by the attach branch and the PC can re-run
+     *       {@code usbip attach} (manual re-attach is the M8 gate; automation is
+     *       M10). Detaches of other devices (the TV's internals) are ignored.</li>
+     * </ul>
      */
     private final BroadcastReceiver attachReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (!UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(intent.getAction())) {
-                return;
-            }
+            String action = intent.getAction();
             UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
             if (device == null) {
                 return;
             }
-            if (serverStarted && device.getDeviceName().equals(servedDeviceName)) {
-                return;
+            if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(action)) {
+                if (serverStarted && device.getDeviceName().equals(servedDeviceName)) {
+                    return;
+                }
+                Log.i(TAG, "USB attach (broadcast): " + name(device) + " (" + device.getDeviceName()
+                        + ") -> claiming (serverStarted=" + serverStarted + ")");
+                requestOrStart(device);
+            } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(action)) {
+                if (serverStarted && device.getDeviceName().equals(servedDeviceName)) {
+                    Log.i(TAG, "USB detach (broadcast): served device " + name(device)
+                            + " gone -> releasing; will re-claim on reappearance");
+                    stopServer();
+                    setStatus("Device detached. Will re-claim on replug; re-run `usbip attach` on the PC.");
+                    render();
+                }
             }
-            Log.i(TAG, "USB attach (broadcast): " + name(device) + " (" + device.getDeviceName()
-                    + ") -> claiming (serverStarted=" + serverStarted + ")");
-            requestOrStart(device);
         }
     };
 

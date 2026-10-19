@@ -251,11 +251,12 @@ plugged in. That is what lets "transfers work" be gated locally.
   sees the wheel, `evtest` lists `EV_FF`, and **force feedback physically drives
   the wheel** -- the OUT path (`0x01`) carried generically, no device-specific
   code. Only **PC mode** works: PS3/native enumerates `046D:C260` (single
-  interface) -> `hid-generic`, no FFB; PS4 mode does not pass through. The wheel
-  booted straight into `c24f`, so the mode-switch **re-enumeration /
-  reset-recovery gate item is not yet exercised** -- that remains (the §7 reset
-  path; the §8 attach-receiver + `ServerService` restart groundwork landed with
-  this change). Depends on **M7d** and the §8 auto-claim lifecycle.
+  interface) -> `hid-generic`, no FFB; PS4 mode does not pass through. Reset recovery is **MET** too (2026-10-19): on a detach the TV releases the
+  served device and re-claims it automatically on replug (`opened + claimed
+  2/2`); the PC re-attaches manually with `usbip attach` (reload `vhci-hcd` if
+  the stock client wedges after the abrupt disconnect -- a known USB/IP client
+  fragility the §9/M10 companion automates). Manual re-attach is within the gate.
+  Depends on **M7d** and the §8 auto-claim lifecycle. **M8 COMPLETE.**
 
 ## M9 — Robustness
 
