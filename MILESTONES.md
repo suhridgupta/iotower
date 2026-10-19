@@ -207,6 +207,31 @@ plugged in. That is what lets "transfers work" be gated locally.
   generic pad, live input in `evtest` — was run on the TV and passed (`./gradlew :android:installDebug`); it could not be run in the authoring
   environment (no Android SDK / no TV). PRD: `prds/m7-android-integration.md`. During L3 bring-up the interrupt-IN read path was reworked (M7b, `prds/m7b-interrupt-in-read-path.md`): demand-driven `bulkTransfer` bound 1:1 to each client IN URB, replacing a free-running reader that dropped reports and busy-spun. `:core` change is additive logging only; `:core:test` stays green. The 2026-10-16 run confirmed M7b fixed the read path (no spin; every IN URB answered) and isolated the fault to the interrupt-IN endpoint stalling on the forwarded `SET_CONFIGURATION`; M7c (`prds/m7c-interrupt-in-endpoint-halt.md`) no-op-ACKs that request and adds `CLEAR_FEATURE(ENDPOINT_HALT)` recovery. L3 gate MET on the TV (2026-10-16): `evtest` shows live F310 input over the network. Two known rough edges tracked for follow-up (M7d/M8): a ~24 s post-attach stall before reports flow, and a reader busy-loop after the device is unplugged.
 
+## M7d — Post-M7 polish: first-attach stall + unplug busy-loop
+
+- **Build:** two `AndroidUsbBackend`-only fixes for the rough edges the M7 L3 run
+  left open (`bugs/m7-interrupt-in-empty-reports.md`): (1) classifying a `bulkTransfer`
+  `-1` that took ~the full read timeout as a no-data poll, not a stall -- keep
+  the URB pending instead of flooding `-EPIPE`/`CLEAR_FEATURE`, which removes the
+  ~24 s first-attach stall and the mid-stream dips; (2) gone-device detection
+  (failing halt-clears on sustained IN errors) that parks the readers and
+  fast-fails submits instead of busy-looping after the device is unplugged, and
+  surfaces the disconnect for M8 reset recovery to consume. Device-agnostic;
+  `:core` untouched.
+- **Test:** L3 — re-attach and measure attach→first-report; unplug and confirm
+  the reader parks (no `clearHalt -> ret=-1` churn). `:core:test` stays green; no
+  new L1 test (no `:core` change).
+- **Gate:** first report well under ~24 s with the steady stream unchanged; after
+  unplug the read rate falls to ~0 and submits complete with a disconnect status.
+- **Where:** L3 (polish; not a protocol gate). PRD:
+  `prds/m7d-attach-stall-and-unplug-busyloop.md`.
+- **Status:** DONE -- implemented and L3-validated (2026-10-19). The
+  `-1`-classification fix (`TIMEOUT_FLOOR_MS`) and gone-detect-and-park live in
+  `AndroidUsbBackend`; `:core` untouched, `:core:test` green. On the TV the 1 Hz
+  summaries read `timeout=` during idle (not `err=`), the first report lands
+  immediately (no ~24 s stall), and there is no `clearHalt` spam or false
+  `device gone` park. Proven on the F310 baseline, then on the composite G29.
+
 ## M8 — G29: OUT transfers, composite, reset
 
 - **Build:** nothing device-specific by design — this validates the transparent
@@ -219,6 +244,18 @@ plugged in. That is what lets "transfers work" be gated locally.
   mode-switch reset recovers (manual re-attach acceptable here; automation is
   M10).
 - **Where:** L3.
+- **Status:** OUT/FFB + composite **MET on the TV (2026-10-19)**. The G29 in
+  **PC mode** (enumerates `046D:C24F`, a 2-interface composite) is claimed
+  (`claimed 2/2`; `0x81`/`0x82` IN, `0x01` OUT) and reaches Fedora over the
+  network; the PC's `logitech`/`new-lg4ff` binds (not `hid-generic`), Oversteer
+  sees the wheel, `evtest` lists `EV_FF`, and **force feedback physically drives
+  the wheel** -- the OUT path (`0x01`) carried generically, no device-specific
+  code. Only **PC mode** works: PS3/native enumerates `046D:C260` (single
+  interface) -> `hid-generic`, no FFB; PS4 mode does not pass through. The wheel
+  booted straight into `c24f`, so the mode-switch **re-enumeration /
+  reset-recovery gate item is not yet exercised** -- that remains (the §7 reset
+  path; the §8 attach-receiver + `ServerService` restart groundwork landed with
+  this change). Depends on **M7d** and the §8 auto-claim lifecycle.
 
 ## M9 — Robustness
 

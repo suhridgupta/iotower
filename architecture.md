@@ -347,6 +347,19 @@ concession to the physical world.
 - Screen-off on the TV must not suspend the service — the foreground service
   plus CPU wake handling covers this; test it, since TV firmware varies.
 
+> **Implementation status (§8 lifecycle, M8).** `MainActivity` registers a
+> runtime `ACTION_USB_DEVICE_ATTACHED` receiver (alongside the manifest
+> intent-filter for cold launch) and claims the **attached** device directly, so
+> a replug or a re-enumeration is re-claimed rather than left to the kernel input
+> driver (the cause of the TV "scroll"); `forceClaim` then detaches it. Device
+> selection stays device-agnostic: the attach intent names the exact device, and
+> when choosing without one the app claims the *sole* connected device and
+> refuses to guess among several -- a TV has its own internal USB devices (a
+> Realtek Bluetooth/Wi-Fi combo), so "take the first" would claim the wrong one.
+> `ServerService` restarts cleanly for a new/re-enumerated device (teardown +
+> re-claim), serialized so a rapid re-attach can't race. The first grant needs a
+> one-time USB-permission prompt; after that it auto-claims on attach.
+
 ---
 
 ## 9. The optional PC-side companion

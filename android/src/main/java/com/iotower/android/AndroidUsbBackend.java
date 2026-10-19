@@ -38,14 +38,19 @@ import java.util.concurrent.atomic.AtomicInteger;
  * thread per IN endpoint owns all reads for that endpoint (single-threaded
  * endpoint access) and a FIFO of outstanding {@link UsbTransfer} URBs:
  * <ul>
- *   <li>{@code n > 0}: complete the head URB with the report (a success is never
- *       read with no URB to receive it, so it cannot be dropped);</li>
- *   <li>{@code n == 0} (timeout / NAK — on-change endpoint had nothing): keep the
- *       URB queued and re-poll; it legitimately stays pending, as on real
- *       hardware, until data or a client {@code CMD_UNLINK};</li>
- *   <li>{@code n < 0} (device/endpoint error): complete the head URB with
- *       {@code -EPIPE} and back off briefly so a persistently erroring endpoint
- *       cannot busy-spin.</li>
+ *   <li>{@code n > 0}: complete the head URB with the report;</li>
+ *   <li>no data - an {@code n == 0}, or an {@code n < 0} that took ~the full
+ *       {@link #READ_TIMEOUT_MS} (Android cannot tell a timeout from a stall by
+ *       return code, so a full-window {@code -1} is a no-data poll): keep the URB
+ *       queued and re-poll; it legitimately pends until data or a client
+ *       {@code CMD_UNLINK} (m7d - this removed the ~24 s first-attach stall and the
+ *       mid-stream dips, both idle timeouts misread as errors);</li>
+ *   <li>immediate {@code n < 0}: a real endpoint error - rate-limited
+ *       {@code CLEAR_FEATURE(ENDPOINT_HALT)} recovery, else complete the head URB
+ *       with {@code -EPIPE} and back off. Sustained immediate errors whose
+ *       halt-clear also fails mean the device is gone: the readers park and submits
+ *       fail fast with {@code -ESHUTDOWN} (m7d), surfaced via {@link #isDeviceGone()}
+ *       for the M8 reset path.</li>
  * </ul>
  * OUT uses {@code bulkTransfer} on a worker pool; ep0 uses
  * {@link #controlTransfer}.
@@ -74,6 +79,8 @@ public final class AndroidUsbBackend implements UsbBackend {
     private static final int STATUS_ECONNRESET = -104;
     /** {@code -EPIPE}: a device/endpoint read error (USB stall / endpoint error). */
     private static final int STATUS_EPIPE = -32;
+    /** m7d: {@code -ESHUTDOWN} - the device is gone (unplugged / re-enumerating). */
+    private static final int STATUS_ESHUTDOWN = -108;
 
     private static final int OUT_TIMEOUT_MS = 1000;
     /** IN read timeout: bounds how often each reader rechecks state when a URB is pending. */
@@ -87,6 +94,23 @@ public final class AndroidUsbBackend implements UsbBackend {
      * error fires immediately; then at most once per interval).
      */
     private static final int HALT_CLEAR_INTERVAL_MS = 1000;
+
+    /**
+     * m7d: a {@code bulkTransfer} returning {@code -1} only after about the full
+     * {@link #READ_TIMEOUT_MS} window is a no-data poll, not a stall - Android
+     * cannot distinguish the two by return code. At/above this floor the read is a
+     * benign timeout (keep the URB pending, re-poll); below it an immediate
+     * {@code -1} is a genuine endpoint error / gone device.
+     */
+    private static final int TIMEOUT_FLOOR_MS = 150;
+
+    /**
+     * m7d: consecutive immediate IN errors that, together with a failing
+     * {@code CLEAR_FEATURE(ENDPOINT_HALT)} (ep0 itself erroring), mark the device
+     * gone so readers park instead of busy-looping after an unplug. At the observed
+     * ~96 immediate errors/s this trips within ~0.2 s of the device disappearing.
+     */
+    private static final int GONE_ERROR_THRESHOLD = 20;
 
     /**
      * USB full-speed, matching what {@code FakeUsbBackend} advertises. No Host
@@ -107,6 +131,8 @@ public final class AndroidUsbBackend implements UsbBackend {
             Executors.newFixedThreadPool(2, named("iotower-usb-out"));
 
     private volatile boolean running;
+    /** m7d: set once the device is detected gone (unplug / re-enumeration); parks the readers. */
+    private volatile boolean deviceGone;
 
     public static AndroidUsbBackend open(UsbManager usbManager, UsbDevice device) {
         if (usbManager == null || device == null) {
@@ -238,6 +264,9 @@ public final class AndroidUsbBackend implements UsbBackend {
 
     @Override
     public UsbTransfer submit(int endpointAddress, int direction, byte[] buffer, int length) {
+        if (deviceGone) {
+            return completedTransfer(STATUS_ESHUTDOWN); // m7d: device gone - fail fast, don't queue
+        }
         UsbEndpoint endpoint = endpoints.get(endpointAddress);
         if (endpoint == null) {
             Log.w(TAG, "submit: no claimed endpoint for 0x" + Integer.toHexString(endpointAddress));
@@ -314,6 +343,15 @@ public final class AndroidUsbBackend implements UsbBackend {
         }
     }
 
+    /**
+     * m7d: true once the device was detected gone (sustained immediate IN errors
+     * whose halt-clear also failed). The M8 reset-recovery path polls this to tear
+     * the backend down and re-acquire when the device returns.
+     */
+    public boolean isDeviceGone() {
+        return deviceGone;
+    }
+
     @Override
     public void close() {
         running = false;
@@ -358,9 +396,12 @@ public final class AndroidUsbBackend implements UsbBackend {
     private void readLoop(EndpointReader r) {
         while (running) {
             synchronized (inLock) {
-                while (running && r.urbs.isEmpty()) {
+                // Park while there is nothing to read, or once the device is gone
+                // (m7d): a gone device makes every read return an immediate error, so
+                // we stop polling instead of busy-looping at ~96/s until close().
+                while (running && (deviceGone || r.urbs.isEmpty())) {
                     try {
-                        inLock.wait(1000); // periodic wake to recheck running
+                        inLock.wait(1000); // periodic wake to recheck running / deviceGone
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         return;
@@ -371,6 +412,7 @@ public final class AndroidUsbBackend implements UsbBackend {
                 }
             }
 
+            long startMs = System.nanoTime() / 1_000_000L;
             int n;
             try {
                 n = connection.bulkTransfer(r.endpoint, r.buf, r.buf.length, READ_TIMEOUT_MS);
@@ -380,6 +422,7 @@ public final class AndroidUsbBackend implements UsbBackend {
                 }
                 n = -1;
             }
+            long elapsedMs = (System.nanoTime() / 1_000_000L) - startMs;
 
             r.reads++;
             if (n > 0) {
@@ -396,23 +439,36 @@ public final class AndroidUsbBackend implements UsbBackend {
                                 + " deliver n=" + n + " depth=" + depthOf(r));
                     }
                 }
-            } else if (n == 0) {
+            } else if (n == 0 || elapsedMs >= TIMEOUT_FLOOR_MS) {
+                // m7d: no data within the read window. Android's bulkTransfer returns
+                // -1 on a timeout just as it does on a stall, so a -1 that took ~the
+                // full READ_TIMEOUT_MS is a no-data poll, not an endpoint error. Keep
+                // the client URB queued and re-poll - it legitimately pends until data
+                // arrives (as on real hardware), with no CLEAR_FEATURE and no -EPIPE
+                // flood. This removes the ~24 s first-attach "stall" and the
+                // mid-stream dips (both idle timeouts previously misread as errors).
                 r.timeouts++;
-                // On-change endpoint had nothing; keep the URB queued and re-poll.
+                r.consecErr = 0;
             } else {
+                // Immediate -1: a genuine endpoint error (stall) or a gone device.
                 r.errs++;
                 r.consecErr++;
-                // m7c: a read error means the endpoint likely stalled — clear
-                // ENDPOINT_HALT so a subsequent read can succeed. Rate-limited so
-                // ep0 is not flooded (first error fires immediately, then ~1/s).
                 long now = System.currentTimeMillis();
-                if (now - r.lastHaltClearMs >= HALT_CLEAR_INTERVAL_MS) {
-                    int cr = clearEndpointHalt(r.address);
+                // Clear ENDPOINT_HALT to recover a real stall: fire on the first
+                // immediate error, then rate-limited so ep0 is not flooded.
+                if (r.consecErr == 1 || now - r.lastHaltClearMs >= HALT_CLEAR_INTERVAL_MS) {
+                    r.lastHaltClearRet = clearEndpointHalt(r.address);
                     r.lastHaltClearMs = now;
                     if (DEBUG) {
                         Log.i(TAG, "urbIN ep=0x" + Integer.toHexString(r.address)
-                                + " clearHalt(ENDPOINT_HALT) -> ret=" + cr);
+                                + " clearHalt(ENDPOINT_HALT) -> ret=" + r.lastHaltClearRet);
                     }
+                }
+                // m7d: immediate errors whose halt-clear also fails (ep0 itself
+                // erroring) mean the device is gone - park instead of spinning.
+                if (r.lastHaltClearRet < 0 && r.consecErr >= GONE_ERROR_THRESHOLD) {
+                    markDeviceGone(r);
+                    continue; // queued URBs already failed; the loop top parks the reader
                 }
                 UsbTransfer w;
                 synchronized (inLock) {
@@ -430,6 +486,42 @@ public final class AndroidUsbBackend implements UsbBackend {
             }
             maybeSummary(r);
         }
+    }
+
+    /**
+     * m7d: mark the device gone (detected from sustained immediate IN errors whose
+     * {@code CLEAR_FEATURE(ENDPOINT_HALT)} also fails - ep0 itself erroring). Fails
+     * every queued URB with {@code -ESHUTDOWN} and wakes the readers so they park at
+     * the loop top instead of busy-looping. Idempotent. Device-agnostic (decided by
+     * transfer outcome only, never VID/PID - Invariant 1).
+     */
+    private void markDeviceGone(EndpointReader trigger) {
+        if (deviceGone) {
+            return;
+        }
+        deviceGone = true;
+        if (DEBUG) {
+            Log.w(TAG, "urbIN ep=0x" + Integer.toHexString(trigger.address)
+                    + " device gone (immediate errors + halt-clear failing) - parking readers");
+        }
+        synchronized (inLock) {
+            for (EndpointReader r : readers.values()) {
+                for (UsbTransfer urb : r.urbs) {
+                    if (!urb.completion.isDone()) {
+                        urb.completion.complete(new UsbTransfer.Result(STATUS_ESHUTDOWN, null, 0));
+                    }
+                }
+                r.urbs.clear();
+            }
+            inLock.notifyAll();
+        }
+    }
+
+    /** A pre-completed transfer carrying {@code status} - for fail-fast returns (m7d). */
+    private static UsbTransfer completedTransfer(int status) {
+        UsbTransfer t = new UsbTransfer(null);
+        t.completion.complete(new UsbTransfer.Result(status, null, 0));
+        return t;
     }
 
     private int depthOf(EndpointReader r) {
@@ -516,6 +608,7 @@ public final class AndroidUsbBackend implements UsbBackend {
         int maxDepth;
         long lastSummaryMs;
         long lastHaltClearMs; // m7c: 0 => first read error clears the halt immediately
+        int lastHaltClearRet; // m7d: last CLEAR_FEATURE(ENDPOINT_HALT) result; <0 => ep0 failing (gone)
 
         EndpointReader(int address, UsbEndpoint endpoint) {
             this.address = address;

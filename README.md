@@ -59,6 +59,47 @@ evtest                                # or Oversteer, or the device's own toolin
 Install the tools with `sudo dnf install usbip usbutils` on Fedora if they are
 missing.
 
+## Running a Logitech G29 (force feedback)
+
+> **Set the wheel to PC mode.** On Fedora with Oversteer this is the **only mode
+> that produces force feedback**. In PC mode the G29 enumerates as `046D:C24F`
+> (a 2-interface composite) and the PC's `logitech` / `new-lg4ff` driver binds it
+> *with* FFB. PS3/native mode enumerates as `046D:C260` (single interface) and the
+> PC falls back to `hid-generic` -- inputs work but there is **no force feedback**;
+> **PS4 mode does not pass through at all**. If `evtest` shows no `EV_FF` or
+> Oversteer reports "No device available", the wheel is in the wrong mode.
+
+**On the TV** (first time needs one tap, then it is automatic):
+
+1. Install / launch the app (Android Studio **Run**, or `./gradlew :android:installDebug`).
+2. Plug the wheel into the TV. The app auto-claims it on attach. Grant the USB
+   permission prompt the first time -- on a non-touch TV you can confirm it over
+   adb with `adb shell input keyevent 66`. Once claimed, `forceClaim` detaches the
+   kernel driver and the UI stops scrolling. Confirm in logcat:
+   `opened + claimed 2/2 interface(s); endpoints: 0x81 0x1 0x82`.
+
+**On Fedora:**
+
+```bash
+sudo modprobe vhci-hcd
+usbip list -r <tv-ip>                       # the G29 (046d:c24f) is listed
+sudo usbip attach -r <tv-ip> -b <busid>     # attach it
+
+lsusb | grep -i logitech                    # 046d:c24f is now present locally
+dmesg | grep -iE 'logitech|lg4ff'           # the `logitech` driver bound + "Force feedback support"
+sudo evtest                                 # select the G29 -- EV_FF (FF_CONSTANT/…) is listed
+oversteer                                   # detects the wheel; its FFB test physically turns it
+```
+
+Detach when done (find the port with `usbip port`):
+
+```bash
+sudo usbip detach -p <port>
+```
+
+If the wheel binds as `hid-generic` even in PC mode, install the `new-lg4ff`
+driver (FF-capable Logitech HID) and Oversteer per their docs.
+
 ## Status
 
 Early / in development. Protocol codecs (M1), the descriptor parser + endpoint
@@ -70,7 +111,12 @@ Android and no hardware**. The M6 Host-API spike (`HostApiSpike`:
 `claimInterface(forceClaim)` on every interface + interrupt-IN read to Logcat,
 no network) **passed its L3 gate on real hardware** — a Logitech F310 was
 claimed with no root and its live input streamed to Logcat, confirming the
-no-root premise (§2). M7 wires that proven server into the foreground `ServerService` behind a real `AndroidUsbBackend` — Host-API `submit`/`cancel` on interrupt/bulk endpoints, reading each interrupt-IN endpoint on demand (one `bulkTransfer` bound to each client URB), with the device's redundant `SET_CONFIGURATION` no-op-ACKed and `CLEAR_FEATURE(ENDPOINT_HALT)` recovery on a stalled read — so a generic pad plugged into the TV reaches the PC over the network. **Its L3 hardware gate passed on the TV (2026-10-16):** `usbip attach` from Fedora, then live F310 input in `evtest`. M8 (the G29: OUT/FFB, composite device, reset recovery) is next. The full
+no-root premise (§2). M7 wires that proven server into the foreground `ServerService` behind a real `AndroidUsbBackend` — Host-API `submit`/`cancel` on interrupt/bulk endpoints, reading each interrupt-IN endpoint on demand (one `bulkTransfer` bound to each client URB), with the device's redundant `SET_CONFIGURATION` no-op-ACKed and `CLEAR_FEATURE(ENDPOINT_HALT)` recovery on a stalled read — so a generic pad plugged into the TV reaches the PC over the network. **Its L3 hardware gate passed on the TV (2026-10-16):** `usbip attach` from Fedora, then live F310 input in `evtest`. M7d then fixed the M7 read-path rough edges (an idle-timeout misread as an
+endpoint error; a post-unplug busy-loop). **M8 is largely proven (2026-10-19):**
+a Logitech G29 in **PC mode** passes through to Fedora, where `new-lg4ff` binds
+and **force feedback drives the wheel** via Oversteer -- OUT transfers and the
+2-interface composite both carried with no device-specific code. The mode-switch
+reset-recovery is the remaining M8 item. See "Running a Logitech G29" below. The full
 design, protocol details, concurrency model, and the milestone plan with pass
 gates live in [`architecture.md`](architecture.md) and
 [`MILESTONES.md`](MILESTONES.md).

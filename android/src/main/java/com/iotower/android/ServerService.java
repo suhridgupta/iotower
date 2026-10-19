@@ -25,8 +25,10 @@ import java.util.Locale;
  * via {@code UsbManager.EXTRA_DEVICE}. All blocking USB work — opening + claiming
  * the device and running the accept loop — happens on a dedicated worker thread,
  * NEVER on the main thread (open()/claim block, and doing that in
- * {@code onStartCommand} trips a foreground-service ANR). One device, one session
- * (M7 scope); reset/re-enumeration recovery is M8/M9.
+ * {@code onStartCommand} trips a foreground-service ANR). A re-delivered start
+ * command replaces the running session (teardown + re-claim), so a device that
+ * re-enumerates (e.g. a G29 mode switch) is re-claimed rather than left to the
+ * kernel input driver; the full reset-recovery lifecycle is M8/M9.
  */
 public class ServerService extends Service {
     private static final String CHANNEL_ID = "iotower_server";
@@ -36,6 +38,8 @@ public class ServerService extends Service {
     private volatile UsbIpServer server;
     private volatile AndroidUsbBackend backend;
     private volatile boolean stopping;
+    /** Serializes session start/teardown so a rapid re-attach can't race a running session. */
+    private final Object lifecycleLock = new Object();
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -44,27 +48,68 @@ public class ServerService extends Service {
         final UsbManager usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
         final UsbDevice device = intent != null
                 ? intent.getParcelableExtra(UsbManager.EXTRA_DEVICE) : null;
+        if (device == null) {
+            updateNotification("No device supplied");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
-        // All blocking USB work off the main thread (open()/claim block).
-        serverThread = new Thread(() -> {
+        // A re-delivered start command (re-enumeration / device swap) must REPLACE
+        // the current session, not stack a second one on the same :3240 socket.
+        // Do the teardown + the blocking open()/claim on a starter thread (never the
+        // main thread -> foreground-service ANR), serialized by lifecycleLock so a
+        // rapid re-attach can't race a half-built session.
+        new Thread(() -> startSession(usbManager, device), "iotower-session-starter").start();
+        return START_STICKY;
+    }
+
+    /** Tear down any running session, then open + claim {@code device} and serve it. */
+    private void startSession(UsbManager usbManager, UsbDevice device) {
+        synchronized (lifecycleLock) {
+            teardownLocked();
+            if (stopping) {
+                return; // service is being destroyed
+            }
             AndroidUsbBackend b = AndroidUsbBackend.open(usbManager, device);
-            if (b == null || stopping) {
-                if (b != null) {
-                    b.close();
-                }
+            if (b == null) {
                 updateNotification("Failed to open/claim device");
-                stopSelf();
                 return;
             }
-            backend = b;
             UsbIpServer s = new UsbIpServer(b);
+            backend = b;
             server = s;
+            Thread t = new Thread(s::run, "iotower-server"); // the serve loop; blocks until stop()
+            serverThread = t;
+            t.start();
             updateNotification("Serving " + describe(b) + " on :3240");
-            s.run(); // blocks until stop()
-        }, "iotower-server");
-        serverThread.start();
+        }
+    }
 
-        return START_STICKY;
+    /**
+     * Stop the current server, release the device, and clear the session fields.
+     * Order matters: stop the server first so no transfer is mid-flight when the
+     * backend closes. Caller must hold {@link #lifecycleLock}.
+     */
+    private void teardownLocked() {
+        UsbIpServer s = server;
+        if (s != null) {
+            s.stop();
+        }
+        Thread t = serverThread;
+        if (t != null) {
+            try {
+                t.join(1500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        AndroidUsbBackend b = backend;
+        if (b != null) {
+            b.close(); // releases the interfaces so the next claim can take over
+        }
+        server = null;
+        serverThread = null;
+        backend = null;
     }
 
     private static String describe(AndroidUsbBackend backend) {
@@ -99,23 +144,8 @@ public class ServerService extends Service {
     @Override
     public void onDestroy() {
         stopping = true;
-        // Order matters: stop the server first so no transfer is mid-flight when
-        // the backend closes.
-        UsbIpServer s = server;
-        if (s != null) {
-            s.stop();
-        }
-        Thread t = serverThread;
-        if (t != null) {
-            try {
-                t.join(1500);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }
-        AndroidUsbBackend b = backend;
-        if (b != null) {
-            b.close();
+        synchronized (lifecycleLock) {
+            teardownLocked();
         }
         super.onDestroy();
     }

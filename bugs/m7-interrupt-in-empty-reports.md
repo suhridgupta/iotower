@@ -415,3 +415,50 @@ Known rough edges, left for follow-up (not blockers):
 2. **Post-unplug busy-loop** — once the device is physically removed, the reader
    spins (~96/s) on immediate `-1` with `clearHalt -> ret=-1`. Detect a gone
    device and park the reader (fits the §7 / M8 reset-recovery work).
+
+---
+
+## M7d baseline measurement (2026-10-19) — root cause of both rough edges
+
+Baseline capture on the current (pre-M7d) build, F310 over Ethernet, with the
+retained per-read + 1 Hz logging. Three regimes separated cleanly by **read
+latency** and the **halt-clear return**:
+
+| Phase | reads/s | ok | clearHalt ret | `bulkTransfer(-1)` latency |
+|---|---|---|---|---|
+| First-attach "stall" (24 s) | 5 | 0 | **0** (succeeds) | ~200 ms (full READ_TIMEOUT) |
+| Healthy streaming | 8–98 | ≈reads | — | data (n>0) |
+| Mid-stream dips (1–4 s) | 5 | 0 | **0** | ~200 ms |
+| Post-unplug busy-loop | 96 | 0 | **−1** (fails) | immediate (~0 ms) |
+
+Decisive findings:
+1. **Issue 1 is NOT the halt-clear cadence.** During the 24 s stall `clearHalt`
+   returned `0` (success) once per second and every read still errored, each read
+   taking ~200 ms (5/s). First delivered report lined up with the first `evtest`
+   event — the stall ended when **input arrived**, not when a clear "worked."
+   Root cause: Android `bulkTransfer` returns `-1` for a **timeout** exactly as it
+   does for a **stall**, so idle periods (F310 sends nothing when untouched via the
+   forceClaim path) were misread as endpoint errors → `clearHalt` spam + `-EPIPE`
+   flood. The same signature caused the mid-stream dips.
+2. **Issue 2 confirmed as designed.** Post-unplug the reader span at ~96/s on
+   immediate `-1`, and crucially the `CLEAR_FEATURE(ENDPOINT_HALT)` itself returned
+   `−1` (ep0 gone) — exactly the gone signal the M7d PRD keys on, cleanly distinct
+   from a present-but-idle endpoint (clear returns `0`).
+
+### M7d fix (implemented in AndroidUsbBackend, this change)
+- **Issue 1:** classify a `-1` that took ≳ the full `READ_TIMEOUT_MS`
+  (`TIMEOUT_FLOOR_MS = 150`) as a no-data poll — keep the client URB queued and
+  re-poll, no `CLEAR_FEATURE`, no `-EPIPE`. The IN URB legitimately pends until
+  data (correct interrupt-IN semantics); first input delivers instantly. Removes
+  the 24 s flood and the mid-stream dips.
+- **Issue 2:** on sustained **immediate** errors whose halt-clear also fails
+  (`lastHaltClearRet < 0 && consecErr >= GONE_ERROR_THRESHOLD`), set `deviceGone`,
+  fail queued URBs `-ESHUTDOWN` (−108), park the readers, and fail-fast later
+  submits; exposed via `isDeviceGone()` for the M8 reset path.
+### M7d validated (2026-10-19)
+L3-confirmed on the TV, first on the F310 then on the composite **G29 (`c24f`)**:
+the 1 Hz summaries read `reads=5 ok=0 timeout=5 err=0` during idle (timeouts now
+classified, not errors), the first report is delivered immediately with **no ~24 s
+stall**, and there is **no `clearHalt` spam and no false `device gone` park**
+(0 of them) across the whole G29 FFB session. The read path is settled.
+**RESOLVED.**
