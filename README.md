@@ -121,9 +121,9 @@ Automating this -- keeping `vhci-hcd` healthy and re-attaching hands-off after a
 drop -- is the job of the optional PC companion (architecture.md §9, milestone
 M10), now implemented in `companion/iotowerd.py`: it waits for the export,
 attaches, re-attaches automatically when the device resets/re-enumerates, reloads
-a wedged `vhci-hcd`, and detaches cleanly on exit. The manual sequence above
+a wedged `vhci-hcd`, and detaches cleanly on any drop and on exit. The manual sequence above
 stays the no-companion baseline. (The companion's optional PIN/TLS gate, §9.2, is
-still pending.) See [`companion/README.md`](companion/README.md).
+a future milestone -- M11.) See [`companion/README.md`](companion/README.md).
 
 If the wheel binds as `hid-generic` even in PC mode, install the `new-lg4ff`
 driver (FF-capable Logitech HID) and Oversteer per their docs.
@@ -145,7 +145,7 @@ a Logitech G29 in **PC mode** passes through to Fedora, where `new-lg4ff` binds
 and **force feedback drives the wheel** via Oversteer -- OUT transfers and the
 2-interface composite both carried with no device-specific code. Reset recovery works too: on a detach the TV releases the wheel and re-claims it
 on replug, and the PC re-attaches with `usbip attach` (reloading `vhci-hcd` if the
-stock client wedges). **M8 is complete.** See "Running a Logitech G29" below. The full
+stock client wedges). **M8 is complete.** **M9 robustness** -- reset recovery, screen-off survival, and clean client disconnect -- is **MET on the TV (2026-10-20)** for gates 1-3 (the latency/jitter measurement is deferred to an end-of-v1 pass). **M10's optional PC companion** (`companion/iotowerd.py`) is implemented -- auto-attach, auto-reattach on reset, clean detach-on-drop and teardown -- with its L3 hands-off gate pending on hardware; its PIN/TLS security gate is split out to a future milestone (**M11**). The TV app's launcher UI is finalized, with an **Eject** control that releases the device (the matching clean `usbip detach` on the PC is the companion's job). See "Running a Logitech G29" below. The full
 design, protocol details, concurrency model, and the milestone plan with pass
 gates live in [`architecture.md`](architecture.md) and
 [`MILESTONES.md`](MILESTONES.md).
@@ -167,7 +167,8 @@ recovery, lifecycle, latency).
 - **No auth or encryption in the core server.** It assumes a trusted LAN by
   default. An optional PC-side companion daemon can add auto-attach, auto-reattach
   on device reset, and a PIN/TLS gate via a localhost proxy — off the app's
-  critical path (see §9 of the architecture doc).
+  critical path (see §9 of the architecture doc). Auto-attach/reattach are
+  implemented (M10); the PIN/TLS gate is a future milestone (M11).
 
 ## Building
 
@@ -206,7 +207,8 @@ adb devices                     # TV should show as "device" (not "unauthorized"
 #   or directly:
 adb install -r android/build/outputs/apk/debug/app-debug.apk
 
-# Watch the app's logs. In M7 the app runs the USB/IP server (Start); to watch
+# Watch the app's logs. The app runs the USB/IP server (it auto-exports a
+# plugged-in device; there is no Start button -- see the Eject note below). To watch
 # everything from the app's process, all tags:
 adb logcat --pid=$(adb shell pidof -s com.iotower.android)
 
@@ -233,10 +235,10 @@ adb connect <tv-ip>:<debug-port>
 reserve it on the router if you reconnect often. A signature mismatch on install
 (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, e.g. after building on a different
 machine) needs `adb uninstall com.iotower.android` first. The M7 L3 gate — plug
-in a generic pad, press Start, then `usbip attach` from Fedora to the TV's IP and
+in a generic pad (the app auto-exports it), then `usbip attach` from Fedora to the TV's IP and
 watch live input in `evtest` — is in [`MILESTONES.md`](MILESTONES.md). (The M6
 `HostApiSpike` that logged under `IoTowerSpike` is retained as a diagnostic but is
-no longer wired to the Start button.)
+no longer wired to the app's serve path.)
 
 ## Documentation
 

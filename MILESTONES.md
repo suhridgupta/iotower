@@ -285,20 +285,22 @@ plugged in. That is what lets "transfers work" be gated locally.
   pool on every `shutdown()`; steady-state thread set flat across cycles).
   **Remaining:** input latency/jitter (loopback baseline, then Ethernet vs WiFi)
   per the `DEVELOPING.md` procedure, figures to be recorded in `architecture.md`
-  §6; gate is Ethernet median within ~+3 ms of baseline and p99 jitter <= 16 ms. This measurement is **deliberately deferred to a comprehensive end-of-v1 validation pass** (post-M10): the §9/M10 companion changes the attach path, so one proper latency/jitter run at the end is more meaningful than measuring twice. M9's code gates (1-3) are already met and unaffected by the deferral.
+  §6; gate is Ethernet median within ~+3 ms of baseline and p99 jitter <= 16 ms. This measurement is **deliberately deferred to a comprehensive end-of-v1 validation pass** (after the companion work, M10/M11): the §9 companion changes the attach path, so one proper latency/jitter run at the end is more meaningful than measuring twice. M9's code gates (1-3) are already met and unaffected by the deferral.
   `:core:test` stays green; `:android` is device-agnostic; §8 lifecycle. PRDs:
   `prds/m9-robustness.md`, `prds/m9a-core-stop-closes-active-client.md`.
 
-## M10 — Optional PC companion  (§9)
+## M10 — Optional PC companion: supervisor  (§9.1)
 
-- **Build:** auto-attach, the auto-reattach loop, and the optional PIN/TLS proxy.
+- **Build:** auto-attach, the auto-reattach loop, clean detach-on-drop, and clean
+  teardown. (The optional PIN/TLS gate is split out to **M11**.)
 - **Test:** unplug/replug or trigger a G29 mode-switch → the companion
-  re-attaches with no manual step; with PIN on, a stock `usbip attach` is
-  rejected while the companion path succeeds.
-- **Gate:** hands-off reattach works; the PIN gate rejects the bare client.
-- **Where:** L2 (proxy logic) + L3 (real reattach).
-- **Status:** supervisor half **implemented** (2026-10-20), PIN/TLS **still
-  pending** -- so M10 is **not yet fully MET**. The `companion/iotowerd.py`
+  re-attaches with no manual step; `Ctrl-C` / `systemctl stop` detaches our vhci
+  port and leaves no stale `usbip port` entry.
+- **Gate:** hands-off reattach works; a drop (reset or TV-side Eject) detaches
+  cleanly before re-discovering; teardown leaves no stale port.
+- **Where:** L1 (output parsers) + L3 (real reattach).
+- **Status:** **implemented (2026-10-20); L3 hands-off gate pending on the user's
+  TV + Fedora.** The `companion/iotowerd.py`
   daemon now does the §9.1 duties: preflight, discover + auto-attach (waits for
   the TV to export the busid), auto-reattach on reset/re-enumeration (§7, watches
   `usbip port` and re-runs the discover+attach loop when the port drops),
@@ -315,17 +317,34 @@ plugged in. That is what lets "transfers work" be gated locally.
   The risky text parsers are covered by stdlib `unittest`
   (`companion/test_iotowerd.py`, `python3 -m unittest discover -s companion`,
   green); the companion is not in the Gradle build so `:core:test` is unaffected.
-  **Remaining for M10:** the optional authenticating **PIN/TLS proxy (§9.2)** and
-  the matching Android-server "require a PIN handshake at accept time" gate -- a
-  separate pass; the L3 hands-off-reattach gate is for the user's TV+Fedora, and
-  the PIN half of the gate is deferred with the proxy. PRD:
-  `prds/m10-companion-supervisor.md`.
+  The optional authenticating PIN/TLS gate is now its own milestone (**M11**),
+  deliberately deferred. PRD: `prds/m10-companion-supervisor.md`.
+
+## M11 — Optional PIN/TLS gate  (§9.2)  *(future — deferred)*
+
+The security half of the original M10, split out so the supervisor can stand
+complete. Opt-in on a trusted LAN this is off; turn it on for a shared/untrusted
+network.
+
+- **Build:** the companion doubles as an **authenticating localhost proxy** (PIN,
+  ideally TLS-wrapped): the kernel attaches to `127.0.0.1:3240` speaking plain
+  stock USB/IP, the companion relays to the TV over the authenticated link
+  (§9.2). The only Android-app change is "optionally require a PIN handshake at
+  accept time" before honoring `OP_REQ_IMPORT` — off by default (§9.3).
+- **Test:** with PIN **on**, a bare `usbip attach` straight at the TV is rejected,
+  while the companion-proxy path attaches and serves; with PIN **off**, the stock
+  client attaches directly (unchanged).
+- **Gate:** the PIN gate rejects the bare client; the companion path succeeds; PIN
+  off is a no-op on today's behavior.
+- **Where:** L2 (proxy + handshake logic) + L3 (real reject/accept on the LAN).
+- **Status:** not started — deferred. Must not regress the "stock client works
+  with PIN off" baseline (Invariant 3).
 
 ---
 
 ## Beyond v1 — v2 (future)
 
-Only after v1 (M0–M10) is complete and proven. Recorded here so it isn't lost;
+Only after v1 (M0–M11) is complete and proven. Recorded here so it isn't lost;
 not yet broken into gated milestones.
 
 - **Multiple simultaneous inputs.** Export several controllers at once (e.g. a
