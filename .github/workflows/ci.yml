@@ -38,15 +38,16 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Installs the Android command-line tools and exports ANDROID_SDK_ROOT,
-      # which is what makes settings.gradle include :android on the runner.
-      # The action accepts the SDK licenses.
+      # Install only the packages we need. setup-android's default package set
+      # includes the obsolete `tools` package, which no longer exists in current
+      # cmdline-tools and fails the job with exit 1 -- so pass packages
+      # explicitly (compileSdk 35 / build-tools 35.0.0 to match
+      # android/build.gradle). This also exports ANDROID_SDK_ROOT (which makes
+      # settings.gradle include :android on the runner) and accepts the licenses.
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
-      # compileSdk 35 / build-tools 35.0.0 to match android/build.gradle.
-      - name: Install SDK packages
-        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
