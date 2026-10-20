@@ -22,9 +22,13 @@ python3 iotowerd.py --host <tv-ip> --busid 1-1
 ```
 
 It waits for the TV to export the device, attaches it, then holds it — if the
-device drops (unplug, or a G29 PC↔native mode switch re-enumeration) it
-re-attaches hands-off. `Ctrl-C` detaches our vhci port and exits clean. Output
-is colorized on a TTY; piping, `--no-color`, or `$NO_COLOR` turns color off.
+device drops (unplug, a G29 PC↔native mode switch re-enumeration, or a TV-side
+Eject) it `usbip detach`es our vhci port cleanly and then re-attaches hands-off
+when the device comes back (so the stock client doesn't wedge on the abrupt
+close). `Ctrl-C` detaches and exits clean. Output is colorized on a TTY, with a
+compact live status line at the bottom (`state  busid@host  up MM:SS`); piping,
+`--no-color`, or `$NO_COLOR` turns color off and the status line is suppressed
+off-TTY (e.g. under systemd).
 
 ```
 --host      Android TV IP address (required)
@@ -56,7 +60,8 @@ detaches its port before exiting, so no dead vhci port is leaked.
 ## Status
 
 Supervisor (§9.1) **implemented**: preflight, discover + auto-attach,
-auto-reattach on reset/re-enumeration, stock-client (`vhci-hcd`) wedge recovery,
-and clean teardown on SIGINT/SIGTERM. The optional authenticating **PIN/TLS
+auto-reattach on reset/re-enumeration, clean detach-on-drop (reset or TV-side
+Eject), stock-client (`vhci-hcd`) wedge recovery, and clean teardown on
+SIGINT/SIGTERM. The optional authenticating **PIN/TLS
 proxy (§9.2)** and the matching Android-server PIN gate are **still TODO** — so
 M10 is not yet fully complete (see MILESTONES.md M10).

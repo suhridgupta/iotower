@@ -162,3 +162,30 @@ part of the Gradle build (CLAUDE.md module layout) and has no SDK/JDK need.
   never a port the user attached by hand to another server. If host-matching is
   ambiguous (no host in the URL on some versions), prefer to detach only ports
   this process attached (tracked by port number from our own attach), and flag.
+
+
+---
+
+## Revision — clean-detach-on-drop (2b) + compact status line (2026-10-20)
+
+Two additions after the first supervisor pass, driven by the TV-side **Eject**
+work (see `prds/tv-app-ui-finalize.md`):
+
+- **Clean detach on drop (M10 "2b").** When the attached device drops — a reset,
+  a re-enumeration, **or a TV-side Eject** — the watch loop now proactively runs
+  `usbip detach` on our vhci port *before* re-discovering, instead of leaving the
+  stock client to choke on the abrupt remote close (the wedge). The ports to
+  detach are chosen by a new pure helper `detach_targets(our_rows, recorded_port)`
+  = the union of the rows `usbip port` still shows for our host and the port we
+  recorded at attach time (covers the case where the row is already gone but the
+  vhci slot is half-open). On a reset the device re-appears and we re-attach; on
+  an Eject it is no longer exported, so we cleanly stay detached in DISCOVER.
+  This also makes the §7 reset path wedge-resistant, not just Eject.
+- **Compact live status line (TTY only).** In addition to the scrolling log, a
+  single rewriting bottom line shows `state  busid@host  up MM:SS`, redrawn
+  around each log line and refreshed each poll. Suppressed when stdout is not a
+  TTY (piped / under systemd), so the journal stays clean.
+
+New test: `DetachTargetTests` covers `detach_targets` (live+recorded dedupe;
+recorded-survives-empty-table; empty). Still standard-library only; still
+orchestration-only (no protocol). PIN/TLS (§9.2) remains deferred.

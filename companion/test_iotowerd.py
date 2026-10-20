@@ -109,5 +109,21 @@ class UiColorTests(unittest.TestCase):
         self.assertIn("ATTACHED", out)
 
 
+
+class DetachTargetTests(unittest.TestCase):
+    def test_union_of_live_rows_and_recorded_port(self):
+        rows = iotowerd.parse_attached_ports(PORT_ONE, host="192.168.1.50")
+        # live row is port 3; recorded port 3 -> single target (deduped).
+        self.assertEqual(iotowerd.detach_targets(rows, 3), [3])
+
+    def test_recorded_port_survives_empty_table(self):
+        # Abrupt close already tore our row out of `usbip port`: still detach
+        # the slot we recorded, so a half-open vhci port is cleaned (no wedge).
+        self.assertEqual(iotowerd.detach_targets([], 3), [3])
+
+    def test_nothing_when_no_rows_and_no_record(self):
+        self.assertEqual(iotowerd.detach_targets([], None), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

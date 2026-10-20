@@ -303,11 +303,15 @@ plugged in. That is what lets "transfers work" be gated locally.
   the TV to export the busid), auto-reattach on reset/re-enumeration (§7, watches
   `usbip port` and re-runs the discover+attach loop when the port drops),
   stock-client wedge recovery (`modprobe -r vhci-hcd; modprobe vhci-hcd` on the
-  documented `open vhci_driver` failure), and clean teardown on SIGINT/SIGTERM
+  documented `open vhci_driver` failure), **clean detach-on-drop** (on a
+  reset/re-enumeration or a TV-side Eject it `usbip detach`es our vhci port
+  before re-discovering, so the stock client does not wedge), and clean
+  teardown on SIGINT/SIGTERM
   (detaches only ports whose remote URL matches our `--host`, so a hand-attached
   port elsewhere is never touched). Output is a finalized, timestamped,
   state-labelled console UI (ANSI color on a TTY; `--no-color`/`$NO_COLOR`/pipe
-  turns it off). Orchestration only -- no protocol code; standard library only.
+  turns it off), plus a compact live status line (`state busid@host up MM:SS`)
+  on a TTY, suppressed under systemd/when piped. Orchestration only -- no protocol code; standard library only.
   The risky text parsers are covered by stdlib `unittest`
   (`companion/test_iotowerd.py`, `python3 -m unittest discover -s companion`,
   green); the companion is not in the Gradle build so `:core:test` is unaffected.
