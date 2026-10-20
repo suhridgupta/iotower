@@ -267,6 +267,27 @@ plugged in. That is what lets "transfers work" be gated locally.
   measure input latency / jitter and compare Ethernet vs WiFi.
 - **Gate:** survives all three; latency within an interactive budget on Ethernet.
 - **Where:** L3.
+- **Status:** robustness gates 1-3 **MET on the TV (2026-10-20, F310)**; the
+  latency measurement is the only remaining gate item, so **not yet fully MET**.
+  (1) **Reset recovery:** on an F310 unplug the TV detects the device gone, parks
+  the readers (no busy-loop), tears down and releases the wake lock in ~50 ms, and
+  re-claims on replug; the PC's `usbip` device drops cleanly (`evtest` exits with
+  "No such device") and re-attaches manually. This required the **M9a** `:core`
+  fix -- `UsbIpServer.stop()` now also closes the active client socket so a
+  device-gone teardown unblocks the serve thread instead of leaking it and
+  stranding the PC connection (L1 test in `ConcurrencyEngineTest`;
+  `prds/m9a-core-stop-closes-active-client.md`). (2) **Screen-off:** F310 served
+  with the TV in screensaver ~15 min, partial wake lock held -- no drop, no
+  re-claim, unbroken 1 s polling (max gap 1.2 s), input responsive afterward.
+  (3) **Clean client disconnect:** 5x `usbip detach`/re-attach cycles, each
+  re-attached and served cleanly with no exceptions, the serve loop back to
+  listening each time, and no thread leak (the engine reaps its writer + control
+  pool on every `shutdown()`; steady-state thread set flat across cycles).
+  **Remaining:** input latency/jitter (loopback baseline, then Ethernet vs WiFi)
+  per the `DEVELOPING.md` procedure, figures to be recorded in `architecture.md`
+  §6; gate is Ethernet median within ~+3 ms of baseline and p99 jitter <= 16 ms. This measurement is **deliberately deferred to a comprehensive end-of-v1 validation pass** (post-M10): the §9/M10 companion changes the attach path, so one proper latency/jitter run at the end is more meaningful than measuring twice. M9's code gates (1-3) are already met and unaffected by the deferral.
+  `:core:test` stays green; `:android` is device-agnostic; §8 lifecycle. PRDs:
+  `prds/m9-robustness.md`, `prds/m9a-core-stop-closes-active-client.md`.
 
 ## M10 — Optional PC companion  (§9)
 

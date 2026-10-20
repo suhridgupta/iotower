@@ -6,10 +6,13 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
+import android.util.Log;
 
 import com.iotower.core.net.UsbIpServer;
 import com.iotower.core.usb.DeviceInfo;
@@ -31,6 +34,7 @@ import java.util.Locale;
  * kernel input driver; the full reset-recovery lifecycle is M8/M9.
  */
 public class ServerService extends Service {
+    private static final String TAG = "IoTowerService";
     private static final String CHANNEL_ID = "iotower_server";
     private static final int NOTIFICATION_ID = 1;
 
@@ -40,10 +44,30 @@ public class ServerService extends Service {
     private volatile boolean stopping;
     /** Serializes session start/teardown so a rapid re-attach can't race a running session. */
     private final Object lifecycleLock = new Object();
+    /** M9 (§8): partial wake lock held for the serving window. Guarded by {@link #lifecycleLock}. */
+    private PowerManager.WakeLock wakeLock;
+
+    /**
+     * M9: true after a gone-signal teardown until the next session starts. Lets
+     * {@link MainActivity} tell "still serving this device" from "gone, waiting for
+     * it to return" so a re-attach under the same device name isn't ignored as a
+     * duplicate. Same-process static; cleared in {@link #startSession} / onDestroy.
+     */
+    private static volatile boolean waitingForDevice;
+
+    static boolean isWaitingForDevice() {
+        return waitingForDevice;
+    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        startForeground(NOTIFICATION_ID, buildNotification("Starting…"));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // M9 (§8): the type must match the manifest; API 34+ enforces it.
+            startForeground(NOTIFICATION_ID, buildNotification("Starting…"),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification("Starting…"));
+        }
 
         final UsbManager usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
         final UsbDevice device = intent != null
@@ -70,6 +94,7 @@ public class ServerService extends Service {
             if (stopping) {
                 return; // service is being destroyed
             }
+            waitingForDevice = false;
             AndroidUsbBackend b = AndroidUsbBackend.open(usbManager, device);
             if (b == null) {
                 updateNotification("Failed to open/claim device");
@@ -78,10 +103,60 @@ public class ServerService extends Service {
             UsbIpServer s = new UsbIpServer(b);
             backend = b;
             server = s;
+            acquireWakeLockLocked();
+            // M9 (§7/§8): consume the backend's own gone signal, in addition to the
+            // DETACH broadcast. Fired on a reader thread -> hand off immediately.
+            b.setGoneListener(() -> new Thread(() -> onBackendGone(b), "iotower-gone-teardown").start());
             Thread t = new Thread(s::run, "iotower-server"); // the serve loop; blocks until stop()
             serverThread = t;
             t.start();
             updateNotification("Serving " + describe(b) + " on :3240");
+        }
+    }
+
+    /**
+     * M9: the backend {@code b} detected its device gone. Run the same serialized
+     * teardown as every other path, then show a waiting state. Does NOT re-acquire:
+     * the device's reappearance arrives as ACTION_USB_DEVICE_ATTACHED -> a fresh start
+     * command -> a fresh backend (so deviceGone/consecErr reset only via a new
+     * instance, per M7d). The {@code backend != b} check makes a stale signal (session
+     * already replaced by a re-attach, or already torn down by the DETACH path) a no-op.
+     */
+    private void onBackendGone(AndroidUsbBackend b) {
+        synchronized (lifecycleLock) {
+            if (stopping || backend != b) {
+                Log.i(TAG, "gone signal ignored (session already replaced/torn down)");
+                return;
+            }
+            Log.w(TAG, "backend reports device gone -> tearing down session; waiting for device");
+            teardownLocked();
+            waitingForDevice = true;
+            updateNotification("Device gone - waiting for device");
+        }
+    }
+
+    private void acquireWakeLockLocked() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            return;
+        }
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (pm == null) {
+            Log.w(TAG, "no PowerManager; serving without a wake lock");
+            return;
+        }
+        PowerManager.WakeLock wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "iotower:serving");
+        wl.setReferenceCounted(false);
+        wl.acquire();
+        wakeLock = wl;
+        Log.i(TAG, "wake lock acquired (PARTIAL_WAKE_LOCK)");
+    }
+
+    private void releaseWakeLockLocked() {
+        PowerManager.WakeLock wl = wakeLock;
+        wakeLock = null;
+        if (wl != null && wl.isHeld()) {
+            wl.release();
+            Log.i(TAG, "wake lock released");
         }
     }
 
@@ -110,6 +185,7 @@ public class ServerService extends Service {
         server = null;
         serverThread = null;
         backend = null;
+        releaseWakeLockLocked(); // M9: serving window over
     }
 
     private static String describe(AndroidUsbBackend backend) {
@@ -146,6 +222,7 @@ public class ServerService extends Service {
         stopping = true;
         synchronized (lifecycleLock) {
             teardownLocked();
+            waitingForDevice = false;
         }
         super.onDestroy();
     }

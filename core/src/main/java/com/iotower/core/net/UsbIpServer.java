@@ -59,6 +59,9 @@ public final class UsbIpServer implements Runnable {
     // ephemeral port and learn it race-free, and lets stop() actually unblock
     // a server thread parked in accept().
     private volatile ServerSocket serverSocket;
+    // The connection currently being served (null when idle; one client at a
+    // time). stop() closes it to unblock a serve thread parked in a socket read.
+    private volatile Socket activeClient;
     private final CountDownLatch boundLatch = new CountDownLatch(1);
     private volatile int boundPort = -1;
 
@@ -93,7 +96,13 @@ public final class UsbIpServer implements Runnable {
     }
 
     private void handle(Socket client) {
+        activeClient = client;
         try {
+            if (!running) {
+                // stop() ran between accept() and the line above, so it may have
+                // missed this socket; don't start serving it.
+                return;
+            }
             InputStream in = client.getInputStream();
             OutputStream out = client.getOutputStream();
 
@@ -126,6 +135,7 @@ public final class UsbIpServer implements Runnable {
                 client.close();
             } catch (IOException ignored) {
             }
+            activeClient = null;
         }
     }
 
@@ -318,6 +328,15 @@ public final class UsbIpServer implements Runnable {
         if (server != null) {
             try {
                 server.close();
+            } catch (IOException ignored) {
+            }
+        }
+        // Unblock a serve thread parked in a read on the attached client; its
+        // normal unwinding (engine shutdown, client close, loop exit) does the rest.
+        Socket client = activeClient;
+        if (client != null) {
+            try {
+                client.close();
             } catch (IOException ignored) {
             }
         }

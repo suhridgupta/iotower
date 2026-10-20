@@ -307,6 +307,10 @@ For interactive devices this matters as much as correctness.
   with an output-feedback loop (a wheel's FFB, a rumble pad) the loop closes
   through the network, so WiFi jitter is felt directly in the device.
 
+> **Measurement (M9).** Method: `DEVELOPING.md` "Measuring latency and jitter".
+> `TCP_NODELAY` is set on the accepted socket (`UsbIpServer`). Measured figures
+> (loopback baseline, Ethernet, WiFi): **pending the L3 run** -- record them here.
+
 ---
 
 ## 7. Device transparency and reset handling
@@ -341,6 +345,14 @@ concession to the physical world.
 > lives on the PC: the stock `vhci-hcd` client can wedge after an abrupt
 > disconnect (`usbip: error: open vhci_driver`) and needs a module reload before
 > the re-attach -- a client-side fragility the §9 companion (M10) automates.
+>
+> **M9 addition.** `ServerService` no longer relies on the DETACH broadcast alone:
+> `AndroidUsbBackend.setGoneListener` fires a one-shot callback on the backend's own
+> gone transition (M7d), and the service runs the same `lifecycleLock`-serialized
+> teardown, then shows "waiting for device". It does not re-acquire; the device's
+> return arrives as `ACTION_USB_DEVICE_ATTACHED` -> fresh backend. A stale or
+> duplicate signal (DETACH already tore down, or a re-attach replaced the session) is
+> a no-op via a `backend == b` check.
 
 ---
 
@@ -368,6 +380,15 @@ concession to the physical world.
 > `ServerService` restarts cleanly for a new/re-enumerated device (teardown +
 > re-claim), serialized so a rapid re-attach can't race. The first grant needs a
 > one-time USB-permission prompt; after that it auto-claims on attach.
+>
+> **M9 addition (screen-off).** While serving, `ServerService` holds a
+> `PARTIAL_WAKE_LOCK` (acquired when a session starts serving, released in
+> `teardownLocked()`/`onDestroy()`; logged) and passes
+> `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` to `startForeground` on API 29+, matching
+> the manifest (`WAKE_LOCK` permission added). Whether this survives 10+ min screen-off
+> on the actual TV firmware is an L3 gate. Core's accept loop and
+> `TransferEngine.shutdown()` already re-listen after a client disconnect; verified at
+> L3 only.
 
 ---
 

@@ -217,7 +217,8 @@ public class MainActivity extends Activity {
         // with navigation events (the "infinite scroll"). ServerService tears down
         // the old session and claims the new device. Ignore only an exact-duplicate
         // intent for the device we are already serving.
-        if (serverStarted && device.getDeviceName().equals(servedDeviceName)) {
+        if (serverStarted && device.getDeviceName().equals(servedDeviceName)
+                && !ServerService.isWaitingForDevice()) {
             return;
         }
         Log.i(TAG, "USB attach: " + name(device) + " (" + device.getDeviceName()
@@ -249,7 +250,8 @@ public class MainActivity extends Activity {
                 return;
             }
             if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(action)) {
-                if (serverStarted && device.getDeviceName().equals(servedDeviceName)) {
+                if (serverStarted && device.getDeviceName().equals(servedDeviceName)
+                        && !ServerService.isWaitingForDevice()) {
                     return;
                 }
                 Log.i(TAG, "USB attach (broadcast): " + name(device) + " (" + device.getDeviceName()

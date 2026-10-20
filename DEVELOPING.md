@@ -54,10 +54,31 @@ sudo usbip detach -p <port>
 ./gradlew :android:installDebug
 ```
 
+### Measuring latency and jitter (M9, §6)
+
+Manual procedure, no committed script. Compare the same device and session back to
+back on Ethernet and WiFi (TV on each in turn).
+
+1. Baseline: `./gradlew :desktop:run` (fake device), attach on the same box via
+   `127.0.0.1`, and record steps 2-3 as the loopback baseline.
+2. Attach the real device (F310 is the ~1 kHz-class cross-check):
+   `sudo usbip attach -r <tv-ip> -b 1-1`; find the node with `sudo evtest`.
+3. With input flowing, sample arrival cadence on `/dev/input/eventN` (`evhz`, or
+   timestamp `evtest` output) for >= 60 s; compute rate, median inter-arrival, std-dev
+   and p99 jitter.
+4. Attach to first report: read `t_first_ok` from `adb logcat -s IoTowerBackend`.
+5. Optional (G29): time an FFB OUT command to its physical effect; else note the omission.
+6. Record the figures in `architecture.md` §6. Budget (M9 gate 4): Ethernet median
+   within ~+3 ms of baseline, p99 jitter <= 16 ms, no sustained spikes.
+
 CI note: `core` and `desktop` build and test with only a JDK — no Android SDK,
 no emulator, no hardware. `settings.gradle` includes `:android` only when an SDK
 is present (`ANDROID_HOME`/`ANDROID_SDK_ROOT` set, or a `local.properties` file),
 so on a bare runner the Android module is simply omitted and the build needs just
-a JDK. The GitHub Actions workflow in `.github/workflows/ci.yml` runs
-`:core:test` + `:desktop:build` on JDK 17. Android Studio always has an SDK, so
-it sees all three modules normally.
+a JDK. The GitHub Actions workflow in `.github/workflows/ci.yml` has two jobs, both on
+JDK 17: `build` runs `:core:test` + `:desktop:build` with no Android SDK (the
+fast logic/protocol gate), and `android` installs the Android SDK (platform 35,
+build-tools 35.0.0) and runs `:android:assembleDebug` -- a compile-only gate that
+catches Android wiring breaks the JDK-only job cannot see (there are no `:android`
+unit tests; the real M6+ gates are manual L3 runs on the TV). Android Studio always
+has an SDK, so it sees all three modules normally.
