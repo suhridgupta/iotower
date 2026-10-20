@@ -122,3 +122,37 @@ No change to `AndroidManifest.xml` (no new permission/feature), `ServerService`,
 - A custom button background replaces the DeviceDefault focus ripple, so the
   focused/pressed state **must** be provided explicitly (TV usability) — this is
   specified above, not optional.
+
+---
+
+## Revision — Eject control + ejected latch (2026-10-20)
+
+Replaces the Start/Stop toggle with an **Eject-only** model, after review: the
+app already auto-claims the sole device on plug-in (`onResume` + the attach
+receiver), so "Start" was redundant/confusing. The only meaningful manual action
+is releasing the device.
+
+- **Button:** shown only while serving, labelled **Eject**; it takes D-pad focus
+  when it appears. When idle the button is hidden (plugging a device in is the
+  "start"). Idle state label is **WAITING**.
+- **Eject = release + stop exporting** on the TV. The TV is the USB/IP *server*;
+  it cannot run `usbip detach` on the PC. Eject releases the claimed interfaces
+  and stops the service; the PC then sees the device drop. The clean PC-side
+  detach is the companion's job (see `prds/m10-companion-supervisor.md` "2b").
+- **Ejected latch (new logic, not just a relabel):** after an Eject the device
+  usually stays physically plugged, and `onResume`/attach would otherwise
+  silently re-claim it. A new `ejectedDeviceName` field suppresses auto-claim of
+  *that* device (by `getDeviceName()`) until it is physically unplugged. The
+  `USB_DEVICE_DETACHED` handler clears the latch when the ejected device is
+  removed, so a replug re-exports normally. A fresh/different device is
+  unaffected.
+- Still presentation + lifecycle only; no new permissions; device-agnostic
+  (`VID:PID` shown, latch keyed on the opaque `/dev/bus/usb/...` device name, no
+  VID/PID branching); `core`/`ServerService` untouched.
+
+Caveat to validate on the TV: releasing an input device hands it back to the
+kernel driver, which may resume the "UI scroll" until the device is unplugged —
+expected, and the WAITING status nudges the user to unplug. If a release turns
+out to fire DETACHED/ATTACHED (a re-enumeration) and re-trips auto-claim, the
+latch key may need revisiting — flag it. Compile gate `:android:assembleDebug`
++ the on-TV check remain L3 (not runnable in the authoring environment).

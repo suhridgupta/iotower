@@ -40,18 +40,23 @@ import java.util.Locale;
  *
  * <p>Platform widgets + {@code android.graphics} only — no AndroidX, no layout
  * XML (§13 / Invariant 5). The UI is a 10-foot launcher: a wordmark, a status
- * card with a colored state dot, and one D-pad-focusable Start/Stop control.
- * This activity only starts/stops the foreground service; it does not hold the
- * backend or the server itself, so it does not track a dying service (M9). The
- * UI is presentation only and stays device-agnostic — a device is shown as its
- * {@code VID:PID}, never a name table.
+ * card with a colored state dot, and a single D-pad-focusable <b>Eject</b>
+ * control shown only while serving. There is no "Start": a plugged-in device
+ * auto-claims (the sole-device rule in {@link #pickDevice} + the attach
+ * receiver), so the only manual action is releasing it.
+ *
+ * <p>This activity only starts/stops the foreground service; it does not hold
+ * the backend or the server itself, so it does not track a dying service (M9).
+ * The UI is presentation only and stays device-agnostic — a device is shown as
+ * its {@code VID:PID}, and the ejected-latch is keyed on the opaque
+ * {@code /dev/bus/usb/...} device name, never VID/PID.
  */
 public class MainActivity extends Activity {
 
     private static final String ACTION_USB_PERMISSION = "com.iotower.android.USB_PERMISSION";
     private static final String TAG = "IoTower";
     /** Visible build stamp -- bump on each change to confirm the TV is running new code. */
-    private static final String BUILD_ID = "2026-10-20 r7 (m10 companion + finalized TV UI)";
+    private static final String BUILD_ID = "2026-10-20 r8 (eject control + ejected latch)";
 
     // -- Tron-ish 10-foot palette (the name is from TRON's I/O Tower). -------- //
     private static final int BG        = Color.parseColor("#0A0E14"); // near-black
@@ -79,6 +84,15 @@ public class MainActivity extends Activity {
     private boolean serverStarted;
     /** Device name ({@code /dev/bus/usb/...}) currently being served; changes on re-enumeration. */
     private String servedDeviceName;
+    /** {@code VID:PID} label of the served device, kept for the Eject message. */
+    private String servedLabel;
+    /**
+     * Device name the user explicitly ejected. While set, auto-claim of that same
+     * device is suppressed (it usually stays physically plugged after an eject),
+     * until it is unplugged — the {@code DETACHED} handler clears this latch, so a
+     * replug re-exports normally. Null means "no suppression".
+     */
+    private String ejectedDeviceName;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -102,6 +116,8 @@ public class MainActivity extends Activity {
         }
         receiverRegistered = true;
 
+        setState(State.IDLE);
+        setStatus("Plug a USB device into the TV — it exports automatically.");
         render();
         // If we were launched by a device-attach intent, jump straight in.
         maybeHandleAttachIntent(getIntent());
@@ -121,10 +137,9 @@ public class MainActivity extends Activity {
             return;
         }
         // If a device is already connected and we already hold permission (e.g.
-        // "use by default" was granted once), claim it immediately -- no Start
-        // tap, no dialog. This is also the adb-drivable entry point: launching
-        // this activity (`am start`) auto-claims whatever is plugged in, so a
-        // device that floods the UI with input can be grabbed without fighting it.
+        // "use by default" was granted once), claim it immediately -- no tap, no
+        // dialog. This is also the adb-drivable entry point: launching this
+        // activity (`am start`) auto-claims whatever is plugged in.
         UsbDevice device = pickDevice();
         if (device == null) {
             int n = usbManager.getDeviceList().size();
@@ -132,6 +147,12 @@ public class MainActivity extends Activity {
                 Log.i(TAG, "onResume: " + n + " USB devices present (TV internals) -- "
                         + "not auto-claiming; plug in the device to export so the attach intent names it");
             }
+            return;
+        }
+        // Honor an explicit eject: do not re-grab the device the user released
+        // until it is physically unplugged (the DETACHED handler clears the latch).
+        if (device.getDeviceName().equals(ejectedDeviceName)) {
+            Log.i(TAG, "onResume: " + name(device) + " was ejected; staying released until replug");
             return;
         }
         if (usbManager.hasPermission(device)) {
@@ -195,7 +216,7 @@ public class MainActivity extends Activity {
         stateLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f);
         stateLabel.setLetterSpacing(0.08f);
         stateLabel.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
-        stateLabel.setText("IDLE");
+        stateLabel.setText("WAITING");
         stateRow.addView(stateLabel);
         card.addView(stateRow);
 
@@ -221,9 +242,9 @@ public class MainActivity extends Activity {
         hint.setLayoutParams(hintLp);
         card.addView(hint);
 
-        // Start/Stop control.
+        // Eject control — shown only while serving (see render()).
         toggle = new Button(this);
-        toggle.setText("Start");
+        toggle.setText("Eject");
         toggle.setAllCaps(true);
         toggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f);
         toggle.setLetterSpacing(0.08f);
@@ -232,7 +253,8 @@ public class MainActivity extends Activity {
         toggle.setTextColor(buttonTextColors());
         toggle.setPadding(dp(48), dp(16), dp(48), dp(16));
         toggle.setStateListAnimator(null); // drop DeviceDefault elevation jump
-        toggle.setOnClickListener(v -> onToggle());
+        toggle.setVisibility(View.GONE);
+        toggle.setOnClickListener(v -> onEject());
         LinearLayout.LayoutParams toggleLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         toggleLp.gravity = Gravity.START;
@@ -249,7 +271,6 @@ public class MainActivity extends Activity {
         footer.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(footer);
 
-        toggle.requestFocus(); // D-pad focus for the TV remote
         return root;
     }
 
@@ -318,24 +339,18 @@ public class MainActivity extends Activity {
                 value, getResources().getDisplayMetrics()));
     }
 
-    private void onToggle() {
-        if (serverStarted) {
-            stopServer();
-            setState(State.IDLE);
-            setStatus("Stopped. Device released.");
-        } else {
-            UsbDevice device = pickDevice();
-            if (device == null) {
-                int n = usbManager.getDeviceList().size();
-                setState(State.IDLE);
-                setStatus(n == 0
-                        ? "No USB device found. Plug one into the TV."
-                        : n + " USB devices present (incl. the TV's own). Unplug and replug the "
-                                + "device to export so it is claimed directly.");
-                return;
-            }
-            requestOrStart(device);
+    /** Eject = release the device + stop exporting (TV side). The PC sees the
+     *  device drop; the companion does the clean {@code usbip detach} there. */
+    private void onEject() {
+        if (!serverStarted) {
+            return; // button is hidden when idle; nothing to eject
         }
+        String label = servedLabel != null ? servedLabel : "device";
+        ejectedDeviceName = servedDeviceName; // latch: no auto-reclaim until replug
+        stopServer();
+        setState(State.IDLE);
+        setStatus("Ejected " + label + " — released to the TV.\n"
+                + "Unplug it to remove, or replug to export again.");
         render();
     }
 
@@ -378,6 +393,7 @@ public class MainActivity extends Activity {
         startForegroundService(intent);
         serverStarted = true;
         servedDeviceName = device.getDeviceName();
+        servedLabel = name(device);
         setState(State.SERVING);
         setStatus("Serving " + name(device) + " on :3240");
         setHint("sudo usbip attach -r " + ipForHint() + " -b 1-1");
@@ -388,6 +404,7 @@ public class MainActivity extends Activity {
         stopService(new Intent(this, ServerService.class));
         serverStarted = false;
         servedDeviceName = null;
+        servedLabel = null;
     }
 
     private void maybeHandleAttachIntent(Intent intent) {
@@ -396,6 +413,12 @@ public class MainActivity extends Activity {
         }
         UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
         if (device == null) {
+            return;
+        }
+        // An attach for a device the user ejected (but has not unplugged) is
+        // ignored until the physical replug clears the latch (DETACHED handler).
+        if (device.getDeviceName().equals(ejectedDeviceName)) {
+            Log.i(TAG, "attach intent for ejected device " + name(device) + " -- ignoring until replug");
             return;
         }
         // Re-claim on EVERY attach, including a re-enumeration: a mode-switching
@@ -420,12 +443,13 @@ public class MainActivity extends Activity {
      *
      * <ul>
      *   <li><b>attach</b> -- claim the newest device (incl. a re-enumeration),
-     *       ignoring only an exact duplicate of what we are already serving;</li>
-     *   <li><b>detach</b> of the <em>served</em> device (unplug or a mode-switch
-     *       re-enumeration) -- release it cleanly and go idle, so its reappearance
-     *       is re-claimed by the attach branch and the PC can re-run
-     *       {@code usbip attach} (manual re-attach is the M8 gate; automation is
-     *       M10). Detaches of other devices (the TV's internals) are ignored.</li>
+     *       ignoring an ejected device until it is replugged, and an exact
+     *       duplicate of what we are already serving;</li>
+     *   <li><b>detach</b> of the <em>served</em> device -- release it cleanly and
+     *       go idle, so its reappearance is re-claimed by the attach branch and the
+     *       PC can re-attach. <b>detach</b> of the <em>ejected</em> device --
+     *       clear the latch so a replug re-exports. Detaches of other devices
+     *       (the TV's internals) are ignored.</li>
      * </ul>
      */
     private final BroadcastReceiver attachReceiver = new BroadcastReceiver() {
@@ -437,6 +461,11 @@ public class MainActivity extends Activity {
                 return;
             }
             if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(action)) {
+                if (device.getDeviceName().equals(ejectedDeviceName)) {
+                    Log.i(TAG, "USB attach (broadcast) for ejected device " + name(device)
+                            + " -- ignoring until replug");
+                    return;
+                }
                 if (serverStarted && device.getDeviceName().equals(servedDeviceName)
                         && !ServerService.isWaitingForDevice()) {
                     return;
@@ -451,6 +480,13 @@ public class MainActivity extends Activity {
                     stopServer();
                     setState(State.WAITING);
                     setStatus("Device detached. Will re-claim on replug; re-run `usbip attach` on the PC.");
+                    render();
+                } else if (device.getDeviceName().equals(ejectedDeviceName)) {
+                    Log.i(TAG, "USB detach (broadcast): ejected device " + name(device)
+                            + " unplugged -> clearing latch");
+                    ejectedDeviceName = null;
+                    setState(State.IDLE);
+                    setStatus("Device removed. Plug one into the TV to export it.");
                     render();
                 }
             }
@@ -475,8 +511,14 @@ public class MainActivity extends Activity {
         }
     };
 
+    /** Show the Eject control only while serving, and give it D-pad focus. */
     private void render() {
-        toggle.setText(serverStarted ? "Stop" : "Start");
+        boolean serving = serverStarted;
+        toggle.setText("Eject");
+        toggle.setVisibility(serving ? View.VISIBLE : View.GONE);
+        if (serving) {
+            toggle.requestFocus();
+        }
     }
 
     private void setStatus(String text) {
@@ -494,7 +536,7 @@ public class MainActivity extends Activity {
                 case WAITING:    color = STATE_WAIT; label = "WAITING";    break;
                 case ERROR:      color = STATE_ERR;  label = "ERROR";      break;
                 case IDLE:
-                default:         color = STATE_IDLE; label = "IDLE";       break;
+                default:         color = STATE_IDLE; label = "WAITING";    break;
             }
             dot.setBackground(dotDrawable(color));
             stateLabel.setText(label);
