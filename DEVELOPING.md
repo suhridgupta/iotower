@@ -58,6 +58,10 @@ CI note: `core` and `desktop` build and test with only a JDK — no Android SDK,
 no emulator, no hardware. `settings.gradle` includes `:android` only when an SDK
 is present (`ANDROID_HOME`/`ANDROID_SDK_ROOT` set, or a `local.properties` file),
 so on a bare runner the Android module is simply omitted and the build needs just
-a JDK. The GitHub Actions workflow in `.github/workflows/ci.yml` runs
-`:core:test` + `:desktop:build` on JDK 17. Android Studio always has an SDK, so
-it sees all three modules normally.
+a JDK. The GitHub Actions workflow in `.github/workflows/ci.yml` has two jobs, both on
+JDK 17: `build` runs `:core:test` + `:desktop:build` with no Android SDK (the
+fast logic/protocol gate), and `android` installs the Android SDK (platform 35,
+build-tools 35.0.0) and runs `:android:assembleDebug` -- a compile-only gate that
+catches Android wiring breaks the JDK-only job cannot see (there are no `:android`
+unit tests; the real M6+ gates are manual L3 runs on the TV). Android Studio always
+has an SDK, so it sees all three modules normally.

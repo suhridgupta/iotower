@@ -25,3 +25,34 @@ jobs:
       # the build needs only a JDK. This runs the M0/M1+ pass gates.
       - name: Run core tests and build desktop harness
         run: ./gradlew :core:test :desktop:build --no-daemon
+
+  android:
+    name: android (compile-only assembleDebug, no tests/hardware)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Installs the Android command-line tools and exports ANDROID_SDK_ROOT,
+      # which is what makes settings.gradle include :android on the runner.
+      # The action accepts the SDK licenses.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # compileSdk 35 / build-tools 35.0.0 to match android/build.gradle.
+      - name: Install SDK packages
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Compile-only gate: catches :android compile / wiring breaks the JDK-only
+      # job above cannot see. There are no :android unit tests and no
+      # emulator/hardware here -- the real M6+ gates are manual L3 runs on the TV.
+      - name: Assemble debug APK
+        run: ./gradlew :android:assembleDebug --no-daemon
