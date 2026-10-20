@@ -198,7 +198,7 @@ def list_remote(host: str) -> Cmd:
 
 
 def attach(host: str, busid: str) -> Cmd:
-    return _run(["usbip", "attach", "-r", host, "-b", busid])
+    return _run(["sudo", "usbip", "attach", "-r", host, "-b", busid])
 
 
 def detach(port: int) -> Cmd:
