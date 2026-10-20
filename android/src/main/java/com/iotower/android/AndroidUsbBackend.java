@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -133,6 +134,9 @@ public final class AndroidUsbBackend implements UsbBackend {
     private volatile boolean running;
     /** m7d: set once the device is detected gone (unplug / re-enumeration); parks the readers. */
     private volatile boolean deviceGone;
+    /** M9: one-shot listener invoked on the {@link #deviceGone} transition (see {@link #setGoneListener}). */
+    private volatile Runnable goneListener;
+    private final AtomicBoolean goneNotified = new AtomicBoolean();
 
     public static AndroidUsbBackend open(UsbManager usbManager, UsbDevice device) {
         if (usbManager == null || device == null) {
@@ -352,6 +356,33 @@ public final class AndroidUsbBackend implements UsbBackend {
         return deviceGone;
     }
 
+    /**
+     * M9 (§7/§8): register a one-shot callback fired when the backend detects the
+     * device is gone (the same transition {@link #markDeviceGone} logs). Lets
+     * {@code ServerService} drive teardown from the backend's own observation, not
+     * only the {@code ACTION_USB_DEVICE_DETACHED} broadcast. The callback runs on a
+     * reader thread, so it must not block or close this backend inline - hand off to
+     * another thread. If the device is already gone it fires immediately. Fires at
+     * most once. No effect on detection; device-agnostic (Invariant 1).
+     */
+    public void setGoneListener(Runnable listener) {
+        goneListener = listener;
+        if (deviceGone) {
+            notifyGone();
+        }
+    }
+
+    private void notifyGone() {
+        Runnable l = goneListener;
+        if (l != null && goneNotified.compareAndSet(false, true)) {
+            try {
+                l.run();
+            } catch (RuntimeException e) {
+                Log.w(TAG, "gone listener threw: " + e);
+            }
+        }
+    }
+
     @Override
     public void close() {
         running = false;
@@ -515,6 +546,7 @@ public final class AndroidUsbBackend implements UsbBackend {
             }
             inLock.notifyAll();
         }
+        notifyGone(); // M9: outside inLock - the listener must never run under it
     }
 
     /** A pre-completed transfer carrying {@code status} - for fail-fast returns (m7d). */

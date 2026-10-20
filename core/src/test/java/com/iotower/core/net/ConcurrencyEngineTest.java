@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -183,6 +184,43 @@ class ConcurrencyEngineTest {
                 socket.setSoTimeout(400);
                 assertThrows(SocketTimeoutException.class, () -> in.read(),
                         "no RET_SUBMIT may follow a successful UNLINK");
+            }
+        } finally {
+            server.stop();
+            serverThread.join(2000);
+        }
+    }
+
+    @Test
+    void stopClosesAttachedClientAndServeThreadExits() throws Exception {
+        QueueingBackend backend = new QueueingBackend();
+        UsbIpServer server = new UsbIpServer(backend, 0);
+        Thread serverThread = new Thread(server, "usbip-server-test");
+        serverThread.setDaemon(true);
+        serverThread.start();
+        try {
+            int port = server.awaitBoundPort(2000);
+            try (Socket socket = new Socket("127.0.0.1", port)) {
+                OutputStream out = socket.getOutputStream();
+                InputStream in = socket.getInputStream();
+
+                // Transfer phase entered; the serve thread is now parked reading the
+                // next command, with nothing pending.
+                importDevice(out, in);
+
+                server.stop();
+
+                serverThread.join(2000);
+                assertTrue(!serverThread.isAlive(), "serve thread must exit after stop()");
+
+                socket.setSoTimeout(2000);
+                int observed;
+                try {
+                    observed = in.read();
+                } catch (SocketException closed) {
+                    observed = -1; // reset also counts as the server closing the connection
+                }
+                assertEquals(-1, observed, "client must observe the server closing the socket");
             }
         } finally {
             server.stop();
