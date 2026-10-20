@@ -297,6 +297,25 @@ plugged in. That is what lets "transfers work" be gated locally.
   rejected while the companion path succeeds.
 - **Gate:** hands-off reattach works; the PIN gate rejects the bare client.
 - **Where:** L2 (proxy logic) + L3 (real reattach).
+- **Status:** supervisor half **implemented** (2026-10-20), PIN/TLS **still
+  pending** -- so M10 is **not yet fully MET**. The `companion/iotowerd.py`
+  daemon now does the §9.1 duties: preflight, discover + auto-attach (waits for
+  the TV to export the busid), auto-reattach on reset/re-enumeration (§7, watches
+  `usbip port` and re-runs the discover+attach loop when the port drops),
+  stock-client wedge recovery (`modprobe -r vhci-hcd; modprobe vhci-hcd` on the
+  documented `open vhci_driver` failure), and clean teardown on SIGINT/SIGTERM
+  (detaches only ports whose remote URL matches our `--host`, so a hand-attached
+  port elsewhere is never touched). Output is a finalized, timestamped,
+  state-labelled console UI (ANSI color on a TTY; `--no-color`/`$NO_COLOR`/pipe
+  turns it off). Orchestration only -- no protocol code; standard library only.
+  The risky text parsers are covered by stdlib `unittest`
+  (`companion/test_iotowerd.py`, `python3 -m unittest discover -s companion`,
+  green); the companion is not in the Gradle build so `:core:test` is unaffected.
+  **Remaining for M10:** the optional authenticating **PIN/TLS proxy (§9.2)** and
+  the matching Android-server "require a PIN handshake at accept time" gate -- a
+  separate pass; the L3 hands-off-reattach gate is for the user's TV+Fedora, and
+  the PIN half of the gate is deferred with the proxy. PRD:
+  `prds/m10-companion-supervisor.md`.
 
 ---
 

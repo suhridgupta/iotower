@@ -119,8 +119,11 @@ sudo usbip attach -r <tv-ip> -b <busid>
 
 Automating this -- keeping `vhci-hcd` healthy and re-attaching hands-off after a
 drop -- is the job of the optional PC companion (architecture.md §9, milestone
-M10); this manual sequence is the interim, and the basis for that future
-server-side reconnect script.
+M10), now implemented in `companion/iotowerd.py`: it waits for the export,
+attaches, re-attaches automatically when the device resets/re-enumerates, reloads
+a wedged `vhci-hcd`, and detaches cleanly on exit. The manual sequence above
+stays the no-companion baseline. (The companion's optional PIN/TLS gate, §9.2, is
+still pending.) See [`companion/README.md`](companion/README.md).
 
 If the wheel binds as `hid-generic` even in PC mode, install the `new-lg4ff`
 driver (FF-capable Logitech HID) and Oversteer per their docs.

@@ -54,6 +54,16 @@ sudo usbip detach -p <port>
 ./gradlew :android:installDebug
 ```
 
+### PC companion tests (optional, not in the Gradle build)
+
+The optional PC companion (`companion/`, architecture.md §9) is standalone
+Python -- not part of the Gradle build and needing no SDK/JDK. Its `usbip`
+output parsers have stdlib unit tests:
+
+```bash
+python3 -m unittest discover -s companion   # no TV, no root, no network
+```
+
 ### Measuring latency and jitter (M9, §6)
 
 Manual procedure, no committed script. Compare the same device and session back to
