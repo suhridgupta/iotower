@@ -399,6 +399,14 @@ concession to the physical world.
 > The TV is the server, so Eject cannot `usbip detach` on the PC; the PC sees the
 > drop and the §9.1 companion does the clean client-side detach. Device-agnostic
 > (latch keyed on the `/dev/bus/usb/...` name, not VID/PID).
+>
+> **Permission prompts (one per enumeration).** The claim path requests the USB
+> permission once per device instance and de-dupes stacked prompts: an in-flight
+> `requestingDeviceName` guard plus `launchMode=singleTask` stop the intent and
+> broadcast paths from both prompting for one attach. A *re-enumerating* device
+> (G29 mode/reset) is a new instance each time and still needs its own grant --
+> this TV firmware offers no "use by default", so a fully dialog-free re-attach is
+> not available; the guard only removes the duplicates.
 
 ---
 

@@ -56,7 +56,7 @@ public class MainActivity extends Activity {
     private static final String ACTION_USB_PERMISSION = "com.iotower.android.USB_PERMISSION";
     private static final String TAG = "IoTower";
     /** Visible build stamp -- bump on each change to confirm the TV is running new code. */
-    private static final String BUILD_ID = "2026-10-20 r8 (eject control + ejected latch)";
+    private static final String BUILD_ID = "2026-10-20 r9 (single-prompt permission + eject)";
 
     // -- Tron-ish 10-foot palette (the name is from TRON's I/O Tower). -------- //
     private static final int BG        = Color.parseColor("#0A0E14"); // near-black
@@ -93,6 +93,8 @@ public class MainActivity extends Activity {
      * replug re-exports normally. Null means "no suppression".
      */
     private String ejectedDeviceName;
+    /** Device we currently have a permission prompt on screen for; blocks stacking a second. */
+    private String requestingDeviceName;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -376,8 +378,18 @@ public class MainActivity extends Activity {
 
     private void requestOrStart(UsbDevice device) {
         if (usbManager.hasPermission(device)) {
+            requestingDeviceName = null;
             startServer(device);
         } else {
+            // One prompt per device instance: if a request for this exact device is
+            // already on screen, do not stack another -- the intent path and the
+            // broadcast path can both land for a single attach. (This firmware never
+            // offers "use by default", so a genuinely new enumeration still needs its
+            // own one grant; that is an OS limit, not a duplicate.)
+            if (device.getDeviceName().equals(requestingDeviceName)) {
+                return;
+            }
+            requestingDeviceName = device.getDeviceName();
             setState(State.REQUESTING);
             setStatus("Requesting permission for " + name(device) + "…");
             PendingIntent pi = PendingIntent.getBroadcast(
@@ -388,6 +400,10 @@ public class MainActivity extends Activity {
     }
 
     private void startServer(UsbDevice device) {
+        if (serverStarted && device.getDeviceName().equals(servedDeviceName)) {
+            render();
+            return; // already serving this exact device; do not restart
+        }
         Intent intent = new Intent(this, ServerService.class)
                 .putExtra(UsbManager.EXTRA_DEVICE, device);
         startForegroundService(intent);
@@ -405,6 +421,7 @@ public class MainActivity extends Activity {
         serverStarted = false;
         servedDeviceName = null;
         servedLabel = null;
+        requestingDeviceName = null;
     }
 
     private void maybeHandleAttachIntent(Intent intent) {
@@ -420,6 +437,9 @@ public class MainActivity extends Activity {
         if (device.getDeviceName().equals(ejectedDeviceName)) {
             Log.i(TAG, "attach intent for ejected device " + name(device) + " -- ignoring until replug");
             return;
+        }
+        if (device.getDeviceName().equals(requestingDeviceName)) {
+            return; // a permission prompt for this device is already on screen
         }
         // Re-claim on EVERY attach, including a re-enumeration: a mode-switching
         // wheel (G29 c24f) drops and reappears as a NEW device, and if we don't
@@ -466,6 +486,9 @@ public class MainActivity extends Activity {
                             + " -- ignoring until replug");
                     return;
                 }
+                if (device.getDeviceName().equals(requestingDeviceName)) {
+                    return; // prompt already on screen for this device
+                }
                 if (serverStarted && device.getDeviceName().equals(servedDeviceName)
                         && !ServerService.isWaitingForDevice()) {
                     return;
@@ -474,6 +497,9 @@ public class MainActivity extends Activity {
                         + ") -> claiming (serverStarted=" + serverStarted + ")");
                 requestOrStart(device);
             } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(action)) {
+                if (device.getDeviceName().equals(requestingDeviceName)) {
+                    requestingDeviceName = null; // its prompt is moot now it is gone
+                }
                 if (serverStarted && device.getDeviceName().equals(servedDeviceName)) {
                     Log.i(TAG, "USB detach (broadcast): served device " + name(device)
                             + " gone -> releasing; will re-claim on reappearance");
@@ -501,6 +527,7 @@ public class MainActivity extends Activity {
             }
             UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
             boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
+            requestingDeviceName = null; // the prompt has been answered
             if (granted && device != null) {
                 startServer(device);
             } else {
