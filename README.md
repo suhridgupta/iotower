@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="I/O Tower" width="150" height="150">
+</p>
+
 # I/O Tower
 
 A minimal, **no-root USB/IP server for Android TV**. Plug a USB device into the

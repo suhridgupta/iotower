@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="I/O Tower" width="96" height="96">
+</p>
+
 # I/O Tower — Architecture
 
 I/O Tower is a minimal, no-root USB/IP **server** that runs on an Android TV and exposes a

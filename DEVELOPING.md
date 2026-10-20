@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="I/O Tower" width="96" height="96">
+</p>
+
 # Developing I/O Tower
 
 ## Layout

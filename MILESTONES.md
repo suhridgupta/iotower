@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="I/O Tower" width="96" height="96">
+</p>
+
 # I/O Tower — Milestones
 
 Testability-ordered delivery plan. The whole USB/IP protocol is proven locally —
