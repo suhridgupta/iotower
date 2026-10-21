@@ -19,12 +19,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 import iotowerd  # noqa: E402
 
 
-# `usbip list -r <host>` with the G29 (046d:c24f) exported as busid 1-1.
+# `usbip list -r <host>` with a device exported as busid 1-1 (discovery).
 LIST_ONE = """\
 Exportable USB devices
 ======================
- - 192.168.1.50
-      1-1: Logitech, Inc. : unknown product (046d:c24f)
+ - 192.168.1.107
+      1-1: Logitech, Inc. : F310 Gamepad [XInput Mode] (046d:c21d)
          : /sys/devices/platform/usb/1-1
          : (Defined at Interface level) (00/00/00)
 """
@@ -32,27 +32,41 @@ Exportable USB devices
 LIST_EMPTY = """\
 Exportable USB devices
 ======================
- - 192.168.1.50
+ - 192.168.1.107
 """
 
-# `usbip port` with one imported port attached to our TV.
-PORT_ONE = """\
-Imported USB devices
-====================
-Port 03: <Port in Use> at High Speed(480Mbps)
-       Logitech, Inc. : unknown product (046d:c24f)
-       6-1 -> usbip://192.168.1.50:3240/1-1
-           -> remote bus/dev 001/005
-"""
-
-# `usbip port` with a port attached to a DIFFERENT remote (must be excluded).
-PORT_OTHER_HOST = """\
+# `usbip port` run as ROOT: the usbip:// record line is present.
+PORT_ONE_ROOT = """\
 Imported USB devices
 ====================
 Port 00: <Port in Use> at Full Speed(12Mbps)
-       unknown vendor : unknown product (1234:5678)
-       2-1 -> usbip://10.0.0.9:3240/1-2
-           -> remote bus/dev 001/003
+       Logitech, Inc. : F310 Gamepad [XInput Mode] (046d:c21d)
+       5-1 -> usbip://192.168.1.107:3240/1-1
+           -> remote bus/dev 001/001
+"""
+
+# `usbip port` run WITHOUT root: libusbip can't read the record, so the usbip://
+# line is replaced by "unknown host ...". The Port header is still present --
+# this is exactly why detection must key on the header, not the record.
+PORT_ONE_NOSUDO = """\
+Imported USB devices
+====================
+libusbip: error: fopen
+libusbip: error: read_record
+Port 00: <Port in Use> at Full Speed(12Mbps)
+       Logitech, Inc. : F310 Gamepad [XInput Mode] (046d:c21d)
+       5-1 -> unknown host, remote port and remote busid
+           -> remote bus/dev 001/001
+"""
+
+# Two ports in use (e.g. a pre-existing attachment plus ours).
+PORT_TWO = """\
+Imported USB devices
+====================
+Port 00: <Port in Use> at Full Speed(12Mbps)
+       some device
+Port 03: <Port in Use> at High Speed(480Mbps)
+       another device
 """
 
 PORT_EMPTY = """\
@@ -74,26 +88,25 @@ class ExportedBusidTests(unittest.TestCase):
         self.assertFalse(iotowerd.device_is_exported(LIST_EMPTY, "1-1"))
 
 
-class AttachedPortTests(unittest.TestCase):
-    def test_single_port_on_our_host(self):
-        rows = iotowerd.parse_attached_ports(PORT_ONE, host="192.168.1.50")
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].port, 3)
-        self.assertEqual(rows[0].host, "192.168.1.50")
-        self.assertEqual(rows[0].busid, "1-1")
+class PortsInUseTests(unittest.TestCase):
+    def test_root_output(self):
+        self.assertEqual(iotowerd.parse_ports_in_use(PORT_ONE_ROOT), {0})
 
-    def test_host_filter_excludes_other_remote(self):
-        # Teardown safety: never detach a port attached to another server.
-        self.assertEqual(
-            iotowerd.parse_attached_ports(PORT_OTHER_HOST, host="192.168.1.50"), [])
-        # Without a filter it is still parsed (so we can see it).
-        rows = iotowerd.parse_attached_ports(PORT_OTHER_HOST)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].port, 0)
-        self.assertEqual(rows[0].host, "10.0.0.9")
+    def test_nonroot_unknown_host_still_detected(self):
+        # The whole point: detection works even when the record is unreadable.
+        self.assertEqual(iotowerd.parse_ports_in_use(PORT_ONE_NOSUDO), {0})
 
-    def test_empty_table(self):
-        self.assertEqual(iotowerd.parse_attached_ports(PORT_EMPTY, host="x"), [])
+    def test_multiple_ports(self):
+        self.assertEqual(iotowerd.parse_ports_in_use(PORT_TWO), {0, 3})
+
+    def test_empty(self):
+        self.assertEqual(iotowerd.parse_ports_in_use(PORT_EMPTY), set())
+
+    def test_delta_identifies_our_attach(self):
+        # The supervisor's detection model: new in-use port after attach is ours.
+        before = iotowerd.parse_ports_in_use(PORT_EMPTY)
+        after = iotowerd.parse_ports_in_use(PORT_ONE_ROOT)
+        self.assertEqual(sorted(after - before), [0])
 
 
 class UiColorTests(unittest.TestCase):
@@ -107,22 +120,6 @@ class UiColorTests(unittest.TestCase):
         out = buf.getvalue()
         self.assertNotIn("\033", out)
         self.assertIn("ATTACHED", out)
-
-
-
-class DetachTargetTests(unittest.TestCase):
-    def test_union_of_live_rows_and_recorded_port(self):
-        rows = iotowerd.parse_attached_ports(PORT_ONE, host="192.168.1.50")
-        # live row is port 3; recorded port 3 -> single target (deduped).
-        self.assertEqual(iotowerd.detach_targets(rows, 3), [3])
-
-    def test_recorded_port_survives_empty_table(self):
-        # Abrupt close already tore our row out of `usbip port`: still detach
-        # the slot we recorded, so a half-open vhci port is cleaned (no wedge).
-        self.assertEqual(iotowerd.detach_targets([], 3), [3])
-
-    def test_nothing_when_no_rows_and_no_record(self):
-        self.assertEqual(iotowerd.detach_targets([], None), [])
 
 
 if __name__ == "__main__":

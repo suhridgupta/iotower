@@ -189,3 +189,27 @@ work (see `prds/tv-app-ui-finalize.md`):
 New test: `DetachTargetTests` covers `detach_targets` (live+recorded dedupe;
 recorded-survives-empty-table; empty). Still standard-library only; still
 orchestration-only (no protocol). PIN/TLS (§9.2) remains deferred.
+
+---
+
+## Revision — record-independent attach detection (2026-10-21)
+
+L3 on the user's Fedora box exposed that `usbip port` here cannot read the
+per-attach record (`libusbip: error: read_record`), so it prints
+`unknown host, remote port and remote busid` instead of the
+`usbip://host:port/busid` line the original parser keyed on — even under `sudo`.
+Detection therefore never fired: the companion kept re-attaching a
+working device and tripped the single-client TV server (`Unknown Op Common
+Status`, multi-minute `usbip list` hangs).
+
+Fix: stop depending on that record. Detection now uses a **port-in-use delta** —
+snapshot the `Port NN: <Port in Use>` headers (which come from sysfs and need no
+root) before `usbip attach`, and whichever vhci port is newly in use afterwards
+is ours; `_attached()` is then "is that port still in use". `parse_attached_ports`
+/ `detach_targets` / `PortRow` are replaced by `parse_ports_in_use`; teardown and
+clean-detach act only on the port we created (safer — never touches ports we did
+not). `port_table()` drops `sudo` (headers are readable without it, and it avoids
+a password re-prompt in the watch poll). `_run` also gained timeouts so a hung
+`usbip` (e.g. `list` refused while attached) can't block the loop. Still
+device-agnostic (no host/busid/VID matching), stdlib-only. New `PortsInUseTests`
+cover the root and the non-root "unknown host" outputs; parser suite green.

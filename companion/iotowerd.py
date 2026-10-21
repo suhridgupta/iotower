@@ -117,18 +117,14 @@ class Ui:
 # Pure parsers of stock `usbip` text output -- the only non-trivial logic, kept
 # side-effect free so it is unit-testable with no TV and no root (section Test).
 # --------------------------------------------------------------------------- #
-# A busid is "<bus>-<port[.port...]>", e.g. 1-1 or 3-1.2
+# A busid is "<bus>-<port[.port...]>", e.g. 1-1 or 3-1.2 (used for discovery).
 _BUSID_RE = re.compile(r"^\s*(\d+-[\d.]+):\s", re.MULTILINE)
-# A `usbip port` remote line: "<busid> -> usbip://<host>:<port>/<busid>"
-_REMOTE_RE = re.compile(r"usbip://([^:/\s]+):(\d+)/(\d+-[\d.]+)")
-# A `usbip port` header line: "Port 03: <Port in Use> at ..."
-_PORT_RE = re.compile(r"^Port\s+(\d+):", re.MULTILINE)
-
-
-class PortRow(NamedTuple):
-    port: int          # the local vhci port number (for `usbip detach -p`)
-    host: str          # remote host the port is attached to
-    busid: str         # remote busid
+# A `usbip port` in-use header: "Port 03: <Port in Use> at ...". This line comes
+# from sysfs and is present even without root -- unlike the usbip://host/busid
+# line, which needs a per-attach record file that is often unreadable (libusbip
+# `read_record` errors -> "unknown host, remote port and remote busid"). So we
+# never match on host/busid: we identify *our* attach by which vhci port is newly
+# in use after we run `usbip attach`. Device-agnostic; no VID/PID, no record.
 
 
 def parse_exported_busids(list_stdout: str) -> List[str]:
@@ -141,42 +137,17 @@ def device_is_exported(list_stdout: str, busid: str) -> bool:
     return busid in parse_exported_busids(list_stdout)
 
 
-def parse_attached_ports(port_stdout: str, host: Optional[str] = None) -> List[PortRow]:
-    """Parse `usbip port` into (port, host, busid) rows.
+_PORT_INUSE_RE = re.compile(r"^Port\s+(\d+):\s*<Port in Use>", re.MULTILINE)
 
-    Associates each ``Port NN:`` header with the ``usbip://host:port/busid``
-    URL that follows it. When ``host`` is given, only rows attached to that
-    host are returned -- so teardown never detaches a port the user attached by
-    hand to a different server.
+
+def parse_ports_in_use(port_stdout: str) -> set:
+    """The set of vhci port numbers currently in use, from `usbip port`.
+
+    Reads only the ``Port NN: <Port in Use>`` headers, so it works whether or
+    not the per-attach record is readable (the libusbip `read_record` /
+    "unknown host" case). Returns an empty set when nothing is attached.
     """
-    rows: List[PortRow] = []
-    cur_port: Optional[int] = None
-    for line in port_stdout.splitlines():
-        m = _PORT_RE.match(line.strip()) or _PORT_RE.match(line)
-        if m:
-            cur_port = int(m.group(1))
-            continue
-        r = _REMOTE_RE.search(line)
-        if r and cur_port is not None:
-            row = PortRow(port=cur_port, host=r.group(1), busid=r.group(3))
-            if host is None or row.host == host:
-                rows.append(row)
-            cur_port = None
-    return rows
-
-
-def detach_targets(our_rows: List[PortRow], recorded_port: Optional[int]) -> List[int]:
-    """Ports to `usbip detach` when our device drops / on teardown.
-
-    The union of the ports `usbip port` still shows for our host and the port
-    we recorded at attach time -- the recorded one covers the case where an
-    abrupt remote close already tore the row out of `usbip port` but left the
-    vhci slot half-open (the wedge we want to pre-empt). Deduped + sorted.
-    """
-    targets = {r.port for r in our_rows}
-    if recorded_port is not None:
-        targets.add(recorded_port)
-    return sorted(targets)
+    return {int(m) for m in _PORT_INUSE_RE.findall(port_stdout)}
 
 
 # --------------------------------------------------------------------------- #
@@ -214,11 +185,10 @@ def detach(port: int) -> Cmd:
 
 
 def port_table() -> Cmd:
-    # Needs root: without it, `usbip port` cannot read the per-port record and
-    # prints "unknown host, remote port and remote busid" instead of the
-    # usbip://host:port/busid line the parser keys on -> no attach is ever
-    # detected. sudo credentials stay cached across the frequent watch polls.
-    return _run(["sudo", "usbip", "port"], timeout=10)
+    # We only read the `Port NN: <Port in Use>` headers (from sysfs), so no root
+    # is needed; the per-attach record (which needs root and is often unreadable)
+    # is not used. Non-sudo also avoids a password re-prompt in the watch loop.
+    return _run(["usbip", "port"], timeout=10)
 
 
 def _looks_wedged(c: Cmd) -> bool:
@@ -257,15 +227,13 @@ class Supervisor:
             return False
         return True
 
-    # -- our currently-attached port(s) for this host, if any. --------------- #
-    def _our_ports(self) -> List[PortRow]:
-        c = port_table()
-        if _looks_wedged(c):
-            return []
-        return parse_attached_ports(c.out, host=self.host)
+    # -- vhci ports currently in use (device-agnostic; no record needed). ---- #
+    def _ports_in_use(self) -> set:
+        return parse_ports_in_use(port_table().out)
 
     def _attached(self) -> bool:
-        return any(r.busid == self.busid for r in self._our_ports())
+        # We are attached iff the port we created is still in use.
+        return self._attached_port is not None and self._attached_port in self._ports_in_use()
 
     # -- one discover+attach attempt; returns True once attached. ------------ #
     def _try_attach(self) -> bool:
@@ -285,6 +253,7 @@ class Supervisor:
             self.ui.status_line("DISCOVER", f"waiting for {self.busid}@{self.host}")
             return False
 
+        before = self._ports_in_use()
         self.ui.state("ATTACH", f"{self.host} busid {self.busid}")
         at = attach(self.host, self.busid)
         if _looks_wedged(at):
@@ -295,22 +264,27 @@ class Supervisor:
             self.ui.warn(f"attach failed: {at.err.strip() or at.out.strip()}")
             return False
 
-        rows = [r for r in self._our_ports() if r.busid == self.busid]
-        if rows:
-            self._attached_port = rows[0].port
-            self._since = time.monotonic()
-            self.ui.state("ATTACHED",
-                          f"{self.busid} on {self.host} -> vhci port {rows[0].port}")
-            self.ui.info(self.ui._c(
-                "the device is now local -- `lsusb` / `evtest` / Oversteer see it",
-                "dim"))
-            self.ui.status_line("SERVING", f"{self.busid}@{self.host}  up 00:00")
-            return True
-        if at.rc == 0:
-            self.ui.warn(f"`usbip attach` returned ok but no vhci port for "
-                         f"{self.busid} is visible in `usbip port` -- retrying "
-                         "(is `usbip port` readable as root?)")
-        return False
+        # Our attach is whichever vhci port is newly in use.
+        after = self._ports_in_use()
+        new = sorted(after - before)
+        if new:
+            self._attached_port = new[0]
+        elif self._attached_port is not None and self._attached_port in after:
+            pass  # re-confirming an attach we already own (e.g. a retry)
+        else:
+            if at.rc == 0:
+                self.ui.warn("`usbip attach` returned ok but no new vhci port "
+                             "appeared in `usbip port` -- retrying")
+            return False
+
+        self._since = time.monotonic()
+        self.ui.state("ATTACHED",
+                      f"{self.busid} on {self.host} -> vhci port {self._attached_port}")
+        self.ui.info(self.ui._c(
+            "the device is now local -- `lsusb` / `evtest` / Oversteer see it",
+            "dim"))
+        self.ui.status_line("SERVING", f"{self.busid}@{self.host}  up 00:00")
+        return True
 
     def run(self) -> None:
         # Discover + attach, backing off while the device is absent/unreachable.
@@ -342,11 +316,11 @@ class Supervisor:
 
     # -- proactively detach our vhci slot so the stock client does not wedge. - #
     def _clean_detach(self) -> None:
-        for port in detach_targets(self._our_ports(), self._attached_port):
-            d = detach(port)
+        if self._attached_port is not None:
+            d = detach(self._attached_port)
             if d.rc == 0:
-                self.ui.ok(f"detached vhci port {port} (clean)")
-            # a slot that is already gone is fine -- nothing to clean there.
+                self.ui.ok(f"detached vhci port {self._attached_port} (clean)")
+            # a slot already gone is fine -- nothing to clean there.
         self._attached_port = None
 
     def _sleep(self, secs: float) -> None:
@@ -357,18 +331,16 @@ class Supervisor:
 
     def teardown(self) -> None:
         self.ui.clear_status_line()
-        self.ui.state("DETACH", "releasing our vhci port(s) on exit")
-        targets = detach_targets(self._our_ports(), self._attached_port)
-        if not targets:
-            self.ui.info(self.ui._c("nothing attached for this host; clean", "dim"))
+        self.ui.state("DETACH", "releasing our vhci port on exit")
+        if self._attached_port is None:
+            self.ui.info(self.ui._c("nothing we attached; clean", "dim"))
             return
-        for port in targets:
-            d = detach(port)
-            if d.rc == 0:
-                self.ui.ok(f"detached vhci port {port}")
-            else:
-                self.ui.warn(f"detach of port {port} failed: "
-                             f"{d.err.strip() or d.out.strip()}")
+        d = detach(self._attached_port)
+        if d.rc == 0:
+            self.ui.ok(f"detached vhci port {self._attached_port}")
+        else:
+            self.ui.warn(f"detach of port {self._attached_port} failed: "
+                         f"{d.err.strip() or d.out.strip()}")
 
 
 def preflight(ui: Ui) -> None:
