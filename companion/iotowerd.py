@@ -188,25 +188,37 @@ class Cmd(NamedTuple):
     err: str
 
 
-def _run(args: List[str]) -> Cmd:
-    p = subprocess.run(args, capture_output=True, text=True)
-    return Cmd(p.returncode, p.stdout or "", p.stderr or "")
+def _run(args: List[str], timeout: Optional[float] = None) -> Cmd:
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return Cmd(p.returncode, p.stdout or "", p.stderr or "")
+    except subprocess.TimeoutExpired as e:
+        # A hung client (e.g. `usbip list -r` against the single-client TV server
+        # while a device is already attached) must not block the loop. rc 124 is
+        # the conventional timeout code; the caller treats it as "not reachable".
+        def _txt(x):
+            return x.decode(errors="replace") if isinstance(x, bytes) else (x or "")
+        return Cmd(124, _txt(e.stdout), _txt(e.stderr) + f"\ntimed out after {timeout:g}s")
 
 
 def list_remote(host: str) -> Cmd:
-    return _run(["usbip", "list", "-r", host])
+    return _run(["usbip", "list", "-r", host], timeout=10)
 
 
 def attach(host: str, busid: str) -> Cmd:
-    return _run(["sudo", "usbip", "attach", "-r", host, "-b", busid])
+    return _run(["sudo", "usbip", "attach", "-r", host, "-b", busid], timeout=20)
 
 
 def detach(port: int) -> Cmd:
-    return _run(["sudo", "usbip", "detach", "-p", str(port)])
+    return _run(["sudo", "usbip", "detach", "-p", str(port)], timeout=10)
 
 
 def port_table() -> Cmd:
-    return _run(["usbip", "port"])
+    # Needs root: without it, `usbip port` cannot read the per-port record and
+    # prints "unknown host, remote port and remote busid" instead of the
+    # usbip://host:port/busid line the parser keys on -> no attach is ever
+    # detected. sudo credentials stay cached across the frequent watch polls.
+    return _run(["sudo", "usbip", "port"], timeout=10)
 
 
 def _looks_wedged(c: Cmd) -> bool:
@@ -294,6 +306,10 @@ class Supervisor:
                 "dim"))
             self.ui.status_line("SERVING", f"{self.busid}@{self.host}  up 00:00")
             return True
+        if at.rc == 0:
+            self.ui.warn(f"`usbip attach` returned ok but no vhci port for "
+                         f"{self.busid} is visible in `usbip port` -- retrying "
+                         "(is `usbip port` readable as root?)")
         return False
 
     def run(self) -> None:
