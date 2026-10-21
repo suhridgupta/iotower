@@ -21,6 +21,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -56,7 +57,7 @@ public class MainActivity extends Activity {
     private static final String ACTION_USB_PERMISSION = "com.iotower.android.USB_PERMISSION";
     private static final String TAG = "IoTower";
     /** Visible build stamp -- bump on each change to confirm the TV is running new code. */
-    private static final String BUILD_ID = "2026-10-20 r9 (single-prompt permission + eject)";
+    private static final String BUILD_ID = "2026-10-21 r10 (logo title + single-prompt permission + eject)";
 
     // -- Tron-ish 10-foot palette (the name is from TRON's I/O Tower). -------- //
     private static final int BG        = Color.parseColor("#0A0E14"); // near-black
@@ -181,14 +182,29 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         card.setLayoutParams(cardLp);
 
-        // Wordmark + tagline.
-        TextView wordmark = new TextView(this);
-        wordmark.setText("I/O TOWER");
-        wordmark.setTextColor(TEXT);
-        wordmark.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34f);
-        wordmark.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
-        wordmark.setLetterSpacing(0.18f);
-        card.addView(wordmark);
+        // Title: the logo mark (the "I/O") + "TOWER" wordmark, sized to match.
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        ImageView mark = new ImageView(this);
+        mark.setImageResource(R.drawable.logo_mark);
+        mark.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        mark.setContentDescription("I/O");
+        titleRow.addView(mark, new LinearLayout.LayoutParams(dp(48), dp(34)));
+
+        TextView word = new TextView(this);
+        word.setText("TOWER");
+        word.setTextColor(TEXT);
+        word.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34f);
+        word.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
+        word.setLetterSpacing(0.18f);
+        LinearLayout.LayoutParams wordLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        wordLp.setMarginStart(dp(8));
+        titleRow.addView(word, wordLp);
+
+        card.addView(titleRow);
 
         TextView tagline = new TextView(this);
         tagline.setText("No-root USB/IP server");

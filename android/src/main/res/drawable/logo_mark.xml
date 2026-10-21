@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- I/O Tower logo mark (from assets/logo-mark.svg): the "I" bar + concentric
+     "O" + red slash. Framework VectorDrawable (API 21+) — no AndroidX. viewport
+     cropped to the glyph so an ImageView of this size shows the mark edge-to-edge
+     and lines up with the "TOWER" text. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="34dp"
+    android:viewportWidth="310"
+    android:viewportHeight="222">
+    <!-- "I" bar (rounded rect) -->
+    <path
+        android:pathData="M19,22 h22 a12,12 0 0 1 12,12 v158 a12,12 0 0 1 -12,12 h-22 a12,12 0 0 1 -12,-12 v-158 a12,12 0 0 1 12,-12 z"
+        android:fillColor="#00000000"
+        android:strokeColor="#EEF1FA"
+        android:strokeWidth="8"/>
+    <!-- "O" outer ring -->
+    <path
+        android:pathData="M130,113 a86,86 0 1 0 172,0 a86,86 0 1 0 -172,0 z"
+        android:fillColor="#00000000"
+        android:strokeColor="#EEF1FA"
+        android:strokeWidth="8"/>
+    <!-- "O" inner ring -->
+    <path
+        android:pathData="M176,113 a40,40 0 1 0 80,0 a40,40 0 1 0 -80,0 z"
+        android:fillColor="#00000000"
+        android:strokeColor="#EEF1FA"
+        android:strokeWidth="8"/>
+    <!-- red slash -->
+    <path
+        android:pathData="M79,210 L119,12"
+        android:fillColor="#00000000"
+        android:strokeColor="#FF2B2B"
+        android:strokeWidth="16"
+        android:strokeLineCap="round"/>
+</vector>
