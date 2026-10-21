@@ -264,9 +264,17 @@ class Supervisor:
             self.ui.warn(f"attach failed: {at.err.strip() or at.out.strip()}")
             return False
 
-        # Our attach is whichever vhci port is newly in use.
-        after = self._ports_in_use()
-        new = sorted(after - before)
+        # Our attach is whichever vhci port is newly in use. The port can take a
+        # moment to register after `usbip attach` returns, so poll briefly.
+        after = before
+        new: List[int] = []
+        deadline = time.monotonic() + 2.5
+        while True:
+            after = self._ports_in_use()
+            new = sorted(after - before)
+            if new or time.monotonic() >= deadline:
+                break
+            time.sleep(0.3)
         if new:
             self._attached_port = new[0]
         elif self._attached_port is not None and self._attached_port in after:
@@ -274,7 +282,10 @@ class Supervisor:
         else:
             if at.rc == 0:
                 self.ui.warn("`usbip attach` returned ok but no new vhci port "
-                             "appeared in `usbip port` -- retrying")
+                             f"appeared (ports in use before={sorted(before)}, "
+                             f"after={sorted(after)}) -- retrying. If 'after' is "
+                             "non-empty, a stale attach is held; clear it with "
+                             "`sudo modprobe -r vhci-hcd && sudo modprobe vhci-hcd`")
             return False
 
         self._since = time.monotonic()
