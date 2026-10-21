@@ -134,7 +134,7 @@ driver (FF-capable Logitech HID) and Oversteer per their docs.
 
 ## Status
 
-Early / in development. Protocol codecs (M1), the descriptor parser + endpoint
+In active development — the full v1 passthrough is proven end-to-end on real hardware (including G29 force feedback and the hands-off PC companion); the only v1 items left are the deferred M9 latency run and the optional M11 PIN/TLS gate. Protocol codecs (M1), the descriptor parser + endpoint
 map (M2), `DEVLIST` negotiation (M3), `IMPORT` + control transfers (M4), and the
 asynchronous interrupt/bulk transfer engine with `CMD_UNLINK` cancellation (M5)
 are done — a fake device enumerates in `lsusb` and streams scripted input over

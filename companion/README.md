@@ -59,9 +59,11 @@ detaches its port before exiting, so no dead vhci port is leaked.
 
 ## Status
 
-Supervisor (§9.1) **implemented**: preflight, discover + auto-attach,
-auto-reattach on reset/re-enumeration, clean detach-on-drop (reset or TV-side
-Eject), stock-client (`vhci-hcd`) wedge recovery, and clean teardown on
-SIGINT/SIGTERM. The optional authenticating **PIN/TLS
-proxy (§9.2)** and the matching Android-server PIN gate are **still TODO** — so
-M10 is not yet fully complete (see MILESTONES.md M10).
+Supervisor (§9.1) **complete** — the M10 gate was met hands-off on Fedora + TV
+(2026-10-21): preflight, discover + auto-attach, auto-reattach on
+reset/re-enumeration, clean detach-on-drop (reset or TV-side Eject), stock-client
+(`vhci-hcd`) wedge recovery, and clean teardown on SIGINT/SIGTERM. Attach
+detection uses a port-in-use delta (the `usbip://` record line is often
+unreadable here) and reads `usbip port` without root. The optional authenticating
+**PIN/TLS proxy (§9.2)** and the matching Android-server PIN gate are their own
+future milestone, **M11** — separate from this (complete) M10 supervisor.

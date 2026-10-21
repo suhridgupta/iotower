@@ -155,7 +155,7 @@ plugged in. That is what lets "transfers work" be gated locally.
   hardware).
 - **Where:** L3, minimal. First contact with the Host API; de-risks the port
   before wiring the network in.
-- **Status:** code complete; L3 hardware gate pending on the TV. The
+- **Status:** code complete; L3 hardware gate **MET (2026-09-23)** — see the **Gate** line below. The
   `:android` module now carries the spike: `HostApiSpike` opens the device,
   `claimInterface(forceClaim=true)` on **every** interface (§2 — the
   stop-scrolling step), parses `getRawDescriptors()` through the **core**
@@ -303,7 +303,7 @@ plugged in. That is what lets "transfers work" be gated locally.
 - **Gate:** hands-off reattach works; a drop (reset or TV-side Eject) detaches
   cleanly before re-discovering; teardown leaves no stale port.
 - **Where:** L1 (output parsers) + L3 (real reattach).
-- **Status:** MET on the user's Fedora + TV (2026-10-21).** Hands-off attach,
+- **Status: MET on the user's Fedora + TV (2026-10-21).** Hands-off attach,
   auto-reattach on a drop (unplug / TV-side Eject), and clean detach-on-drop were
   verified in one session -- `ATTACH -> ATTACHED -> WATCH`, then `RESET ->
   detached vhci port N (clean) -> DISCOVER -> ATTACH -> ATTACHED`, with the live
@@ -313,7 +313,7 @@ plugged in. That is what lets "transfers work" be gated locally.
   line (unreadable here: `libusbip read_record` -> `unknown host`) in favour of a
   device-agnostic **port-in-use delta** (the `Port NN: <Port in Use>` headers; no
   root, no record) plus a short post-attach poll. A `vhci-hcd` reload first
-  cleared stale ports left by the earlier broken-detection runs. ** The `companion/iotowerd.py`
+  cleared stale ports left by the earlier broken-detection runs. The `companion/iotowerd.py`
   daemon now does the §9.1 duties: preflight, discover + auto-attach (waits for
   the TV to export the busid), auto-reattach on reset/re-enumeration (§7, watches
   `usbip port` and re-runs the discover+attach loop when the port drops),
