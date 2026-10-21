@@ -452,8 +452,9 @@ nothing device-specific.
 > a TV-side Eject triggers a `usbip detach` of our port before re-discovering, so
 > the stock client does not wedge on the abrupt close), and clean teardown on
 > SIGINT/SIGTERM. Console UI with a compact TTY status line; `usbip`-output
-> parsers unit-tested. The real hands-off-reattach L3 gate runs on the user's
-> TV + Fedora. The PIN/TLS gate below is a **separate milestone (M11)**, deferred.
+> parsers unit-tested. The hands-off-reattach L3 gate is **MET on the user's TV
+> + Fedora (2026-10-21)**; detection keys on a port-in-use delta, not the
+> often-unreadable usbip:// record line. The PIN/TLS gate below is a **separate milestone (M11)**, deferred.
 
 ### 9.2 Optional PIN / proxy for security
 
