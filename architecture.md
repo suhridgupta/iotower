@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="I/O Tower" width="96" height="96">
+</p>
+
 # I/O Tower — Architecture
 
 I/O Tower is a minimal, no-root USB/IP **server** that runs on an Android TV and exposes a
@@ -389,6 +393,24 @@ concession to the physical world.
 > on the actual TV firmware is an L3 gate. Core's accept loop and
 > `TransferEngine.shutdown()` already re-listen after a client disconnect; verified at
 > L3 only.
+>
+> **UI finalize (Eject + latch).** The launcher UI drops the Start/Stop toggle:
+> since a plugged-in device auto-claims, the only manual action is **Eject**
+> (shown only while serving), which releases the device and stops the service.
+> An `ejectedDeviceName` latch then suppresses auto-claim of that device until it
+> is physically unplugged (the `DETACHED` handler clears it), so an explicit
+> Eject sticks instead of being immediately re-claimed on the next `onResume`.
+> The TV is the server, so Eject cannot `usbip detach` on the PC; the PC sees the
+> drop and the §9.1 companion does the clean client-side detach. Device-agnostic
+> (latch keyed on the `/dev/bus/usb/...` name, not VID/PID).
+>
+> **Permission prompts (one per enumeration).** The claim path requests the USB
+> permission once per device instance and de-dupes stacked prompts: an in-flight
+> `requestingDeviceName` guard plus `launchMode=singleTask` stop the intent and
+> broadcast paths from both prompting for one attach. A *re-enumerating* device
+> (G29 mode/reset) is a new instance each time and still needs its own grant --
+> this TV firmware offers no "use by default", so a fully dialog-free re-attach is
+> not available; the guard only removes the duplicates.
 
 ---
 
@@ -422,6 +444,17 @@ A small daemon (a systemd service) that:
 
 All of this wraps the stock CLI. It has no knowledge of USB/IP internals and
 nothing device-specific.
+
+> **Implementation status (§9.1, M10 — done 2026-10-20).** Implemented in
+> `companion/iotowerd.py` (standard library only): preflight, discover +
+> auto-attach, auto-reattach on reset/re-enumeration (watches `usbip port`),
+> stock-client (`vhci-hcd`) wedge recovery, **clean detach-on-drop** (a reset or
+> a TV-side Eject triggers a `usbip detach` of our port before re-discovering, so
+> the stock client does not wedge on the abrupt close), and clean teardown on
+> SIGINT/SIGTERM. Console UI with a compact TTY status line; `usbip`-output
+> parsers unit-tested. The hands-off-reattach L3 gate is **MET on the user's TV
+> + Fedora (2026-10-21)**; detection keys on a port-in-use delta, not the
+> often-unreadable usbip:// record line. The PIN/TLS gate below is a **separate milestone (M11)**, deferred.
 
 ### 9.2 Optional PIN / proxy for security
 
@@ -466,6 +499,11 @@ The only change to the core Android app is "optionally require a PIN handshake a
 accept time." Everything else — supervision, auto-reattach, TLS — lives in the
 optional companion, off the critical path.
 
+> **Implementation status (§9.2–9.3).** Not started — this is **milestone M11**,
+> deliberately deferred so the §9.1 supervisor (M10) can stand complete. The
+> opt-in posture must preserve the "stock client works with PIN off" baseline
+> (Invariant 3).
+
 ---
 
 ## 10. Scope
@@ -504,7 +542,7 @@ optional companion, off the critical path.
   one TCP connection per `usbip attach`), routing each connection's URBs to the
   right device by `devid`. On Fedora nothing changes — stock `usbip attach` is
   run once per busid and each controller binds its own driver independently.
-- **Prerequisite:** v1 (M1–M10) finished and solid first — reset recovery,
+- **Prerequisite:** v1 (M1–M11) finished and solid first — reset recovery,
   latency, and lifecycle for a *single* device must be rock-solid before adding
   the concurrency and per-device lifecycle that multiple inputs require.
 
@@ -532,7 +570,11 @@ for the full plan with per-milestone test cases and pass gates.
    `UsbIpServer`; L3 hardware gate MET on the TV (2026-10-16).*
 8. **G29** — OUT transfers / FFB, composite device, reset recovery (§7).
 9. **Robustness** — reset reconnect, screen-off survival, clean disconnect, latency.
-10. **Optional PC companion** — auto-attach, auto-reattach, PIN/TLS (§9).
+10. **Optional PC companion (supervisor)** — auto-attach, auto-reattach, clean
+    detach + teardown (§9.1). *Implemented; L3 reattach gate on the user's
+    TV + Fedora.*
+11. **Optional PIN/TLS gate** — authenticating localhost proxy + server-side PIN
+    at accept time (§9.2). *Future — deferred.*
 
 ---
 

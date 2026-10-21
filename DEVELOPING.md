@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="I/O Tower" width="96" height="96">
+</p>
+
 # Developing I/O Tower
 
 ## Layout
@@ -52,6 +56,16 @@ sudo usbip detach -p <port>
 # Build / install the TV app (needs the Android SDK).
 ./gradlew :android:assembleDebug
 ./gradlew :android:installDebug
+```
+
+### PC companion tests (optional, not in the Gradle build)
+
+The optional PC companion (`companion/`, architecture.md §9) is standalone
+Python -- not part of the Gradle build and needing no SDK/JDK. Its `usbip`
+output parsers have stdlib unit tests:
+
+```bash
+python3 -m unittest discover -s companion   # no TV, no root, no network
 ```
 
 ### Measuring latency and jitter (M9, §6)
