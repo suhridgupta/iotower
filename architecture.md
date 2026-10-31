@@ -151,7 +151,9 @@ You must handle two exchanges:
   struct followed by one `usbip_usb_interface` per interface. `usbip list -r
   <ip>` uses this. This is also how a generic server offers a *choice* of
   devices without any hardcoding — advertise every device you've claimed and let
-  the client pick a busid.
+  the client pick a busid. The server advertises all N registered devices (N may
+  be 0); a device whose backend yields no descriptors is omitted and the count
+  reflects only described devices (M12).
 - **`OP_REQ_IMPORT` (0x8003) → `OP_REP_IMPORT` (0x0003).** Client names a busid
   (32-byte string, e.g. `"1-1"`) to claim. Reply status + the
   `usbip_usb_device`. On success the socket **switches into the transfer phase**
@@ -171,7 +173,11 @@ u8   bConfigurationValue, bNumConfigurations, bNumInterfaces
 
 Fill these straight from `UsbDevice` fields and the parsed descriptors
 (`connection.getRawDescriptors()`) — you report whatever the device actually is.
-You invent `busid`/`busnum`/`devnum` yourself and reuse them consistently.
+You invent `busid`/`busnum`/`devnum` yourself and reuse them consistently: here
+`busid = "<busnum>-<devnum>"` and `devid = (busnum << 16) | devnum`, derived from
+each device's bus address (never VID/PID), so every exported device has a unique
+identity. IMPORT of an unknown busid, or one already in its transfer phase
+("device in use"), is rejected with a non-zero status.
 
 ### 4.2 Transfer phase
 
@@ -216,7 +222,9 @@ u8  padding[8]
 a status. Everything else in those blocks is padding.
 
 That is the whole surface for a single non-ISO device: **devlist, import,
-submit/ret, unlink/ret** — and it is identical for every device.
+submit/ret, unlink/ret** — and it is identical for every device. With several
+devices, each client connection (one per `usbip attach`) is its own transfer
+phase with its own engine, echoing the `devid` of the device it imported.
 
 ---
 
@@ -300,8 +308,10 @@ fancier.
 
 For interactive devices this matters as much as correctness.
 
-- Listen on `0.0.0.0:3240` (USB/IP's registered port). One client at a time is
-  fine for v1.
+- Listen on `0.0.0.0:3240` (USB/IP's registered port). Serve **several clients
+  concurrently**: the kernel opens one TCP connection per `usbip attach`, so each
+  accepted connection gets its own handler thread and its own transfer engine
+  (M12, §10). A busid already in its transfer phase is not importable again.
 - **Disable Nagle: `socket.setTcpNoDelay(true)`.** Input reports are a few bytes
   at up to ~1 kHz; Nagle would coalesce them and inject tens of ms of jitter.
   This one line is the difference between crisp and rubbery input.
@@ -515,13 +525,13 @@ optional companion, off the critical path.
 - `CMD_UNLINK`/`RET_UNLINK`
 - OUT transfers (FFB, rumble, LEDs — all transparent)
 - Generic endpoint mapping from descriptors; composite devices
-- One device exported at a time, one client
+- One device exported at a time, one client (superseded in core/desktop by M12 — see v2 below)
 - `tcpNoDelay`, foreground service, detach/reconnect
 
 **Out of scope (v1):**
 
 - Isochronous transfers (Host API can't; excludes webcams/USB audio)
-- Multiple devices or clients simultaneously (planned for **v2** — see below)
+- Multiple devices or clients simultaneously (**v2** — see below; core/desktop done in M12)
 - Auth/encryption in the *core* server — LAN-only trust by default; optional
   PIN/TLS lives in the PC companion (§9), off the app's critical path
 - The PC companion itself (auto-attach, reattach, proxy) — optional, build it
@@ -529,7 +539,7 @@ optional companion, off the critical path.
 - Masking device resets from the client (stretch goal)
 - USB/IP over WAN, speed-negotiation edge cases
 
-**v2 (future — only after v1 is complete and proven):**
+**v2 (partially implemented — core + desktop done in M12; Android M13 and companion M14 pending):**
 
 - **Multiple simultaneous inputs.** Several controllers plugged into the TV
   (typically through a USB hub) exported at once, each appearing as its own
@@ -540,7 +550,12 @@ optional companion, off the critical path.
   claim and hold N devices; keep an endpoint map and a transfer engine *per*
   device; and accept **several concurrent client connections** (the kernel opens
   one TCP connection per `usbip attach`), routing each connection's URBs to the
-  right device by `devid`. On Fedora nothing changes — stock `usbip attach` is
+  right device by `devid`. **Implemented in M12 (core/desktop):** `UsbIpServer`
+  keeps a registry of `ExportedDevice`s (busid `"<busnum>-<devnum>"`, devid per
+  §4.2), DEVLIST advertises all of them, IMPORT routes the busid to its backend
+  and rejects an unknown or already-imported busid, and each connection runs on
+  its own handler thread with its own `TransferEngine` (unchanged). The Android
+  app still claims a single device until M13. On Fedora nothing changes — stock `usbip attach` is
   run once per busid and each controller binds its own driver independently.
 - **Prerequisite:** v1 (M1–M11) finished and solid first — reset recovery,
   latency, and lifecycle for a *single* device must be rock-solid before adding

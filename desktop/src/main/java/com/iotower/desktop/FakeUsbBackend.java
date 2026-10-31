@@ -52,11 +52,45 @@ public final class FakeUsbBackend implements UsbBackend {
                 t.setDaemon(true);
                 return t;
             });
+    /** Synthetic bus address this fake is registered under (busid "{@code busnum-devnum}"). */
+    private final int busnum;
+    private final int devnum;
+    /**
+     * Selects which scripted report cycle this instance plays, so two fakes with the
+     * same descriptor/VID:PID are visibly different in {@code evtest}: variant 0 is
+     * the original (button A + left-stick X); variant 1 toggles B + sweeps left-stick
+     * Y; higher variants cycle through the same two axes and four buttons.
+     */
+    private final int variant;
     /** Drives the scripted report cycle; advances once per delivered report. */
     private final AtomicInteger frame = new AtomicInteger();
     /** In-flight IN transfers -> their scheduled completion, so {@link #cancel} can abort. */
     private final java.util.Map<UsbTransfer, ScheduledFuture<?>> pending =
             new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Default fake: bus address {@code (1, 1)} (busid "1-1") and the original report cycle. */
+    public FakeUsbBackend() {
+        this(1, 1, 0);
+    }
+
+    /**
+     * A fake at {@code (busnum, devnum)} playing report cycle {@code variant}. Same
+     * descriptor and VID:PID as every other instance on purpose: identical devices
+     * are differentiated by busid alone.
+     */
+    public FakeUsbBackend(int busnum, int devnum, int variant) {
+        this.busnum = busnum;
+        this.devnum = devnum;
+        this.variant = variant;
+    }
+
+    public int busnum() {
+        return busnum;
+    }
+
+    public int devnum() {
+        return devnum;
+    }
 
     /** Walk up from the working dir to find {@code testdata/<name>}. */
     private static Path locateTestData(String name) {
@@ -217,19 +251,21 @@ public final class FakeUsbBackend implements UsbBackend {
         scheduler.shutdownNow();
     }
 
-    /** Builds the next 20-byte XInput report: toggles button A and sweeps left-stick X. */
+    /** Builds the next 20-byte XInput report: toggles a button and sweeps a left-stick axis (per {@link #variant}). */
     private byte[] nextReport() {
         int i = frame.getAndIncrement();
         byte[] r = new byte[REPORT_LEN];
         r[0] = 0x00;            // report type
         r[1] = 0x14;            // report length (20)
-        r[2] = (byte) ((i % 2 == 0) ? 0x10 : 0x00); // buttons low: A pressed on even frames
+        int buttonMask = 0x10 << (variant & 3); // variant 0: A (0x10), 1: B (0x20), ...
+        r[2] = (byte) ((i % 2 == 0) ? buttonMask : 0x00); // buttons low: pressed on even frames
         r[3] = 0x00;            // buttons high
         r[4] = 0x00;            // left trigger
         r[5] = 0x00;            // right trigger
         short lx = (short) (i * 4096); // left-stick X sweeps the full s16 range, wrapping
-        r[6] = (byte) (lx & 0xFF);
-        r[7] = (byte) ((lx >> 8) & 0xFF);
+        int axis = 6 + 2 * (variant & 1); // variant even: left-stick X (6-7); odd: left-stick Y (8-9)
+        r[axis] = (byte) (lx & 0xFF);
+        r[axis + 1] = (byte) ((lx >> 8) & 0xFF);
         return r;
     }
 }

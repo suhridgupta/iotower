@@ -166,8 +166,12 @@ recovery, lifecycle, latency).
 - **Isochronous transfers are unsupported.** The Android Host API cannot do them,
   which excludes webcams and USB audio. Everything else — control, interrupt, and
   bulk — is supported, including OUT transfers (force feedback, rumble, LEDs).
-- **One device and one client at a time** in v1. Multiple simultaneous inputs
-  (e.g. a USB hub of controllers) are planned for v2 — see architecture.md §10.
+- **Multiple simultaneous devices** (e.g. a USB hub of controllers) are being
+  delivered in v2 (architecture.md §10). The core server and desktop harness
+  already export several devices and serve several clients concurrently (M12);
+  each device has its own busid and is attached with its own `usbip attach -b`.
+  The Android TV app still claims **one device at a time** until M13, and the
+  companion still supervises one busid until M14.
 - **No auth or encryption in the core server.** It assumes a trusted LAN by
   default. An optional PC-side companion daemon can add auto-attach, auto-reattach
   on device reset, and a PIN/TLS gate via a localhost proxy — off the app's

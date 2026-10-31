@@ -366,4 +366,42 @@ not yet broken into gated milestones.
   concurrent client connections routed by `devid`. The protocol groundwork is
   already in place (`DEVLIST` lists all claimed devices; `devid` disambiguates);
   see architecture.md §10 (v2) for the design outline. Depends on rock-solid
-  single-device passthrough first.
+  single-device passthrough first. Specified in `prds/v2-multi-device.md` and
+  delivered in three gated stages: **M12** (core + desktop), **M13** (Android),
+  **M14** (companion catch-all).
+
+### M12 — Multi-device core + concurrent clients + two-fake harness  (v2 Stage A)
+
+- **Build:** `UsbIpServer` holds a thread-safe registry of `ExportedDevice`s
+  (`addDevice(backend, busnum, devnum)` / `removeDevice(busid)`); busid is
+  `"<busnum>-<devnum>"`, devid `(busnum<<16)|devnum` (a device at `(1,1)` is
+  still `"1-1"` / `(1<<16)|1`). `OP_REQ_DEVLIST` advertises all devices;
+  `OP_REQ_IMPORT` routes the busid to its backend and rejects an unknown busid
+  or one already in its transfer phase. Each accepted connection runs on its own
+  handler thread with its own `TransferEngine`; `stop()` closes the listener and
+  every active client. `TransferEngine` is unchanged. The desktop harness now
+  registers two `FakeUsbBackend`s (busids `1-1` / `1-2`, same descriptor and
+  VID:PID, distinct scripted report cycles).
+- **Test:** L1 `MultiDeviceServerTest` (multi-device DEVLIST; two concurrent
+  connections each reading their own device with correct devid and no
+  cross-talk; in-use busid rejected) plus all pre-existing single-device tests
+  unchanged. L2: two fakes attached at once on the Fedora box.
+- **Gate:** `./gradlew :core:test` green **and** `usbip list -r 127.0.0.1` lists
+  both, both attach simultaneously, two `/dev/input/event*` nodes each stream
+  their own distinct input in `evtest`, each detaches independently.
+- **Where:** L1 + L2.
+- **Status:** L1 gate **MET** (`:core:test` green incl. the three new cases and
+  the unchanged `DevlistNegotiationTest` / `ImportControlTest` /
+  `ConcurrencyEngineTest`). L2 gate **PENDING** — to be run on the Fedora box.
+  The Android app still serves a single device until M13.
+
+### M13 — Android multi-claim lifecycle  (v2 Stage B)  *(not started)*
+
+Per `prds/v2-multi-device.md`: claim/hold N hub-attached controllers, per-device
+permission/eject/gone handling, one `UsbIpServer`. Gate: L3 on the TV with a real
+hub and two controllers.
+
+### M14 — Companion catch-all  (v2 Stage C)  *(not started)*
+
+Per `prds/v2-multi-device.md`: `companion/iotowerd.py` supervises all exported
+busids in one reconcile loop. Gate: L1 reconcile unit tests + L3.

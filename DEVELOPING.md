@@ -43,7 +43,7 @@ testable on a JVM with no device. Only `AndroidUsbBackend` touches the Host API.
 # (usbip list works from M3; usbip attach + enumeration from M4; from M5 the
 #  fake also streams scripted input reports, so evtest shows live axis/button
 #  events with nothing plugged in.)
-./gradlew :desktop:run
+./gradlew :desktop:run                  # registers TWO fakes: busids 1-1 and 1-2 (M12)
 #   in another shell, on the same box:
 sudo modprobe vhci-hcd
 usbip list -r 127.0.0.1                 # read-only, no root needed
@@ -52,6 +52,16 @@ lsusb                                   # the fake device is present locally
 sudo evtest                             # pick the fake's event node -> scripted button/axis events
 #   detach when done (usbip port prints the port number):
 sudo usbip detach -p <port>
+
+# Multi-device (M12): the harness exports two fakes with the SAME descriptor and
+# VID:PID but distinct busids and distinct scripted report cycles. Attach both:
+#   usbip list -r 127.0.0.1                # lists 1-1 and 1-2
+#   sudo usbip attach -r 127.0.0.1 -b 1-1
+#   sudo usbip attach -r 127.0.0.1 -b 1-2
+#   sudo evtest                            # two event nodes, each its own stream
+#                                          # (1-1: button A + left-stick X;
+#                                          #  1-2: button B + left-stick Y)
+#   sudo usbip port                        # two ports; detach each: usbip detach -p <n>
 
 # Build / install the TV app (needs the Android SDK).
 ./gradlew :android:assembleDebug

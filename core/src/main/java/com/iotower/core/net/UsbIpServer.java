@@ -22,56 +22,104 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 
 /**
- * The USB/IP server loop (§3, §6). Listens on {@code 0.0.0.0:3240}, one client
- * at a time for v1. Negotiation (DEVLIST/IMPORT) then the transfer phase run on
- * the accepted socket. Backend-agnostic: it is handed a {@link UsbBackend}, so
- * the identical loop runs under Android and under the desktop harness.
+ * The USB/IP server loop (§3, §6). Listens on {@code 0.0.0.0:3240} and serves
+ * <b>several clients concurrently</b>: the kernel opens one TCP connection per
+ * {@code usbip attach}, so each accepted connection gets its own handler thread
+ * running negotiation (DEVLIST/IMPORT) then the transfer phase. Backend-agnostic:
+ * it is handed {@link UsbBackend}s, so the identical loop runs under Android and
+ * under the desktop harness.
  *
- * <p>Answers {@code OP_REQ_DEVLIST} (§4.1) with the one exported device this
- * backend serves, and {@code OP_REQ_IMPORT} (§4.1) by switching the socket into
- * the transfer phase (§4.2). In the transfer phase this class is only the
- * <em>reader</em> (§5.1): it parses frames off the socket and hands each URB to
- * a {@link TransferEngine}, which owns the worker pool, seqnum correlation, and
- * the single writer thread. Backend-agnostic: the identical loop runs under
- * Android and under the desktop harness.
+ * <p>Exports a registry of {@link ExportedDevice}s (§10): {@code OP_REQ_DEVLIST}
+ * (§4.1) advertises all of them; {@code OP_REQ_IMPORT} (§4.1) matches the
+ * requested busid to the right backend and switches the socket into the transfer
+ * phase (§4.2) — unless that busid is unknown or already in its transfer phase
+ * ("device in use"). In the transfer phase each connection is only the
+ * <em>reader</em> (§5.1): it parses frames off its socket and hands each URB to
+ * its own {@link TransferEngine}, which owns the worker pool, seqnum correlation,
+ * and that socket's single writer thread. Nothing is shared between connections
+ * except the thread-safe registry and imported-busid map.
  */
 public final class UsbIpServer implements Runnable {
 
-    // Invented identity for the exported device (§4.1: "you invent busid /
-    // busnum / devnum yourself and reuse them consistently"). Defined once
-    // here so M4 IMPORT reuses the exact same values.
-    static final String EXPORTED_BUSID = "1-1";
-    static final int EXPORTED_BUSNUM = 1;
-    static final int EXPORTED_DEVNUM = 1;
-    static final String EXPORTED_PATH = "/sys/devices/tv/1-1";
-    /** §4.2 transfer-phase devid, echoed unconditionally (one device, v1). */
-    static final int EXPORTED_DEVID = (EXPORTED_BUSNUM << 16) | EXPORTED_DEVNUM;
-
-    private final UsbBackend backend;
     private final int port;
     private volatile boolean running;
+
+    /** Registered devices, in registration order (DEVLIST order). */
+    private final CopyOnWriteArrayList<ExportedDevice> devices = new CopyOnWriteArrayList<>();
+    /** busid -> the client socket currently in its transfer phase for it. */
+    private final ConcurrentHashMap<String, Socket> importedBy = new ConcurrentHashMap<>();
+    /** Every live client socket, so stop() can close them all. */
+    private final Set<Socket> activeClients = ConcurrentHashMap.newKeySet();
 
     // Testability affordance (production-invisible): lets an L1 test bind an
     // ephemeral port and learn it race-free, and lets stop() actually unblock
     // a server thread parked in accept().
     private volatile ServerSocket serverSocket;
-    // The connection currently being served (null when idle; one client at a
-    // time). stop() closes it to unblock a serve thread parked in a socket read.
-    private volatile Socket activeClient;
     private final CountDownLatch boundLatch = new CountDownLatch(1);
     private volatile int boundPort = -1;
 
+    /** Empty registry on the standard port; add devices with {@link #addDevice}. */
+    public UsbIpServer() {
+        this(UsbIp.PORT);
+    }
+
+    /** Empty registry on {@code port} (0 = ephemeral); add devices with {@link #addDevice}. */
+    public UsbIpServer(int port) {
+        this.port = port;
+    }
+
+    /** Single-device convenience: registers {@code backend} as {@code (1, 1)} => busid "1-1". */
     public UsbIpServer(UsbBackend backend) {
         this(backend, UsbIp.PORT);
     }
 
+    /** Single-device convenience on {@code port}: registers {@code backend} as {@code (1, 1)}. */
     public UsbIpServer(UsbBackend backend, int port) {
-        this.backend = backend;
-        this.port = port;
+        this(port);
+        addDevice(backend, 1, 1);
+    }
+
+    /**
+     * Registers a device (§10). Idempotent per {@code (busnum, devnum)}: if that
+     * address is already registered the existing entry is returned unchanged.
+     */
+    public synchronized ExportedDevice addDevice(UsbBackend backend, int busnum, int devnum) {
+        for (ExportedDevice d : devices) {
+            if (d.busnum == busnum && d.devnum == devnum) {
+                return d;
+            }
+        }
+        ExportedDevice d = new ExportedDevice(backend, busnum, devnum);
+        devices.add(d);
+        return d;
+    }
+
+    /**
+     * Unregisters {@code busid}; a client currently importing it has its
+     * connection closed (its reader unblocks and its engine shuts down). The
+     * caller releases the backend. Returns whether the busid was registered.
+     */
+    public synchronized boolean removeDevice(String busid) {
+        boolean removed = false;
+        for (ExportedDevice d : devices) {
+            if (d.busid.equals(busid)) {
+                removed = devices.remove(d);
+                break;
+            }
+        }
+        Socket importer = importedBy.get(busid);
+        if (importer != null) {
+            closeQuietly(importer);
+        }
+        return removed;
     }
 
     @Override
@@ -88,7 +136,10 @@ public final class UsbIpServer implements Runnable {
                 Socket client = server.accept();
                 client.setTcpNoDelay(true); // §6: disable Nagle — critical for input latency
                 System.out.println("[iotower] client connected: " + client.getRemoteSocketAddress());
-                handle(client);
+                activeClients.add(client);
+                Thread t = new Thread(() -> handle(client), "usbip-client-" + client.getPort());
+                t.setDaemon(true);
+                t.start();
             }
         } catch (IOException e) {
             if (running) e.printStackTrace();
@@ -96,11 +147,10 @@ public final class UsbIpServer implements Runnable {
     }
 
     private void handle(Socket client) {
-        activeClient = client;
         try {
             if (!running) {
-                // stop() ran between accept() and the line above, so it may have
-                // missed this socket; don't start serving it.
+                // stop() ran between accept() and registering the socket, so it may
+                // have missed it; don't start serving it.
                 return;
             }
             InputStream in = client.getInputStream();
@@ -119,7 +169,7 @@ public final class UsbIpServer implements Runnable {
                     handleDevlist(out);
                     break;
                 case UsbIp.OP_REQ_IMPORT:
-                    handleImport(in, out);
+                    handleImport(client, in, out);
                     break;
                 default:
                     System.out.println("[iotower] unexpected op code: 0x"
@@ -131,43 +181,74 @@ public final class UsbIpServer implements Runnable {
             // connection closes, the accept loop keeps going.
             System.out.println("[iotower] error handling connection: " + e);
         } finally {
-            try {
-                client.close();
-            } catch (IOException ignored) {
-            }
-            activeClient = null;
+            closeQuietly(client);
+            activeClients.remove(client);
+        }
+    }
+
+    private static void closeQuietly(Socket s) {
+        try {
+            s.close();
+        } catch (IOException ignored) {
+        }
+    }
+
+    /** One describable device's DEVLIST payload, resolved up front so count and body agree. */
+    private static final class DevlistEntry {
+        final ExportedDevice device;
+        final DeviceInfo info;
+        final List<InterfaceInfo> interfaces;
+
+        DevlistEntry(ExportedDevice device, DeviceInfo info, List<InterfaceInfo> interfaces) {
+            this.device = device;
+            this.info = info;
+            this.interfaces = interfaces;
         }
     }
 
     private void handleDevlist(OutputStream out) throws IOException {
-        byte[] rawDescriptors = backend.rawDescriptors();
-        DeviceInfo deviceInfo = backend.deviceInfo();
-        if (rawDescriptors == null || deviceInfo == null) {
-            System.out.println("[iotower] backend has no descriptors/deviceInfo; closing");
-            return;
+        // Invariant 6: a device whose backend yields no descriptors/deviceInfo is
+        // skipped (not fatal); the count reflects only successfully-described devices.
+        List<DevlistEntry> entries = new ArrayList<>();
+        for (ExportedDevice d : devices) {
+            try {
+                byte[] rawDescriptors = d.backend.rawDescriptors();
+                DeviceInfo deviceInfo = d.backend.deviceInfo();
+                if (rawDescriptors == null || deviceInfo == null) {
+                    System.out.println("[iotower] " + d.busid
+                            + ": no descriptors/deviceInfo; omitting from DEVLIST");
+                    continue;
+                }
+                EndpointMap map = DescriptorParser.parse(rawDescriptors);
+                entries.add(new DevlistEntry(d, deviceInfo, map.interfaces()));
+            } catch (RuntimeException e) {
+                System.out.println("[iotower] " + d.busid + ": cannot describe (" + e
+                        + "); omitting from DEVLIST");
+            }
         }
 
-        EndpointMap map = DescriptorParser.parse(rawDescriptors);
-        List<InterfaceInfo> interfaces = map.interfaces();
-        int n = deviceInfo.numInterfaces;
-
-        int size = OpHeader.BYTES + 4 + UsbIpUsbDevice.BYTES + n * UsbIpUsbInterface.BYTES;
+        int size = OpHeader.BYTES + 4;
+        for (DevlistEntry e : entries) {
+            size += UsbIpUsbDevice.BYTES + e.info.numInterfaces * UsbIpUsbInterface.BYTES;
+        }
         ByteBuffer buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN);
 
         new OpHeader(UsbIp.VERSION, UsbIp.OP_REP_DEVLIST, UsbIp.STATUS_OK).writeTo(buf);
-        buf.putInt(1); // exported-device count — v1 always advertises exactly one device.
+        buf.putInt(entries.size()); // exported-device count (N, possibly 0)
 
-        buildExportedDevice(deviceInfo, n).writeTo(buf);
-
-        for (int i = 0; i < n; i++) {
-            int cls = 0, sub = 0, proto = 0;
-            if (i < interfaces.size()) {
-                InterfaceInfo info = interfaces.get(i);
-                cls = info.bInterfaceClass;
-                sub = info.bInterfaceSubClass;
-                proto = info.bInterfaceProtocol;
+        for (DevlistEntry e : entries) {
+            int n = e.info.numInterfaces;
+            buildExportedDevice(e.device, e.info, n).writeTo(buf);
+            for (int i = 0; i < n; i++) {
+                int cls = 0, sub = 0, proto = 0;
+                if (i < e.interfaces.size()) {
+                    InterfaceInfo info = e.interfaces.get(i);
+                    cls = info.bInterfaceClass;
+                    sub = info.bInterfaceSubClass;
+                    proto = info.bInterfaceProtocol;
+                }
+                new UsbIpUsbInterface(cls, sub, proto, 0).writeTo(buf);
             }
-            new UsbIpUsbInterface(cls, sub, proto, 0).writeTo(buf);
         }
 
         out.write(buf.array(), 0, buf.position());
@@ -176,24 +257,42 @@ public final class UsbIpServer implements Runnable {
 
     /**
      * Builds the {@code usbip_usb_device} struct shared verbatim by DEVLIST and
-     * IMPORT (§4.1), from the invented identity constants and the backend's
+     * IMPORT (§4.1), from the device's invented identity and the backend's
      * {@link DeviceInfo}, so the two replies can never drift.
      */
-    private static UsbIpUsbDevice buildExportedDevice(DeviceInfo deviceInfo, int numInterfaces) {
+    private static UsbIpUsbDevice buildExportedDevice(
+            ExportedDevice d, DeviceInfo deviceInfo, int numInterfaces) {
         return new UsbIpUsbDevice(
-                EXPORTED_PATH, EXPORTED_BUSID, EXPORTED_BUSNUM, EXPORTED_DEVNUM,
+                d.path, d.busid, d.busnum, d.devnum,
                 deviceInfo.speed, deviceInfo.idVendor, deviceInfo.idProduct, deviceInfo.bcdDevice,
                 deviceInfo.deviceClass, deviceInfo.deviceSubClass, deviceInfo.deviceProtocol,
                 deviceInfo.configurationValue, deviceInfo.numConfigurations, numInterfaces);
     }
 
+    private static void rejectImport(OutputStream out) throws IOException {
+        ByteBuffer buf = ByteBuffer.allocate(OpHeader.BYTES).order(ByteOrder.BIG_ENDIAN);
+        new OpHeader(UsbIp.VERSION, UsbIp.OP_REP_IMPORT, /* status */ 1).writeTo(buf);
+        out.write(buf.array());
+        out.flush();
+    }
+
+    private ExportedDevice findDevice(String busid) {
+        for (ExportedDevice d : devices) {
+            if (d.busid.equals(busid)) {
+                return d;
+            }
+        }
+        return null;
+    }
+
     /**
-     * {@code OP_REQ_IMPORT} (§4.1): read the 32-byte busid, match against the
-     * one exported device, reply, and on success switch the same socket into
-     * the transfer phase (§4.2) — does not close here; the caller's
-     * {@code finally} does, once {@link #runTransferPhase} returns.
+     * {@code OP_REQ_IMPORT} (§4.1): read the 32-byte busid, match it against the
+     * registry, reply, and on success switch the same socket into the transfer
+     * phase (§4.2) for <em>that</em> device — does not close here; the caller's
+     * {@code finally} does, once {@link #runTransferPhase} returns. Unknown busid
+     * and busid already in its transfer phase ("device in use") are rejected.
      */
-    private void handleImport(InputStream in, OutputStream out) throws IOException {
+    private void handleImport(Socket client, InputStream in, OutputStream out) throws IOException {
         byte[] busidBytes = new byte[32];
         if (!readFully(in, busidBytes)) {
             System.out.println("[iotower] OP_REQ_IMPORT: truncated busid; closing");
@@ -201,30 +300,40 @@ public final class UsbIpServer implements Runnable {
         }
         String busid = nulTrim(busidBytes);
 
-        if (!EXPORTED_BUSID.equals(busid)) {
+        ExportedDevice device = findDevice(busid);
+        if (device == null) {
             System.out.println("[iotower] OP_REQ_IMPORT: unknown busid '" + busid + "'; rejecting");
-            ByteBuffer buf = ByteBuffer.allocate(OpHeader.BYTES).order(ByteOrder.BIG_ENDIAN);
-            new OpHeader(UsbIp.VERSION, UsbIp.OP_REP_IMPORT, /* status */ 1).writeTo(buf);
+            rejectImport(out);
+            return;
+        }
+
+        byte[] rawDescriptors = device.backend.rawDescriptors();
+        DeviceInfo deviceInfo = device.backend.deviceInfo();
+        if (rawDescriptors == null || deviceInfo == null) {
+            System.out.println("[iotower] " + busid + ": no descriptors/deviceInfo; closing");
+            return;
+        }
+
+        // Claim the busid for this connection; a second claimant is "device in use".
+        if (importedBy.putIfAbsent(busid, client) != null) {
+            System.out.println("[iotower] OP_REQ_IMPORT: busid '" + busid
+                    + "' already in use; rejecting");
+            rejectImport(out);
+            return;
+        }
+        try {
+            ByteBuffer buf = ByteBuffer.allocate(OpHeader.BYTES + UsbIpUsbDevice.BYTES)
+                    .order(ByteOrder.BIG_ENDIAN);
+            new OpHeader(UsbIp.VERSION, UsbIp.OP_REP_IMPORT, UsbIp.STATUS_OK).writeTo(buf);
+            buildExportedDevice(device, deviceInfo, deviceInfo.numInterfaces).writeTo(buf);
             out.write(buf.array());
             out.flush();
-            return;
+
+            runTransferPhase(in, out, device);
+        } finally {
+            // Free the busid so a re-attach of the same device works.
+            importedBy.remove(busid, client);
         }
-
-        byte[] rawDescriptors = backend.rawDescriptors();
-        DeviceInfo deviceInfo = backend.deviceInfo();
-        if (rawDescriptors == null || deviceInfo == null) {
-            System.out.println("[iotower] backend has no descriptors/deviceInfo; closing");
-            return;
-        }
-
-        ByteBuffer buf = ByteBuffer.allocate(OpHeader.BYTES + UsbIpUsbDevice.BYTES)
-                .order(ByteOrder.BIG_ENDIAN);
-        new OpHeader(UsbIp.VERSION, UsbIp.OP_REP_IMPORT, UsbIp.STATUS_OK).writeTo(buf);
-        buildExportedDevice(deviceInfo, deviceInfo.numInterfaces).writeTo(buf);
-        out.write(buf.array());
-        out.flush();
-
-        runTransferPhase(in, out);
     }
 
     /**
@@ -241,11 +350,12 @@ public final class UsbIpServer implements Runnable {
      * client reconnects. The backend is <em>not</em> closed here — it outlives a
      * single connection.
      */
-    private void runTransferPhase(InputStream in, OutputStream out) throws IOException {
+    private void runTransferPhase(InputStream in, OutputStream out, ExportedDevice device)
+            throws IOException {
         byte[] basicBytes = new byte[UsbIpHeaderBasic.BYTES];
         byte[] blockBytes = new byte[28]; // CmdSubmit.BYTES == CmdUnlink.BYTES == 28
 
-        TransferEngine engine = new TransferEngine(backend, out, EXPORTED_DEVID);
+        TransferEngine engine = new TransferEngine(device.backend, out, device.devid);
         engine.start();
         try {
             while (true) {
@@ -331,14 +441,10 @@ public final class UsbIpServer implements Runnable {
             } catch (IOException ignored) {
             }
         }
-        // Unblock a serve thread parked in a read on the attached client; its
-        // normal unwinding (engine shutdown, client close, loop exit) does the rest.
-        Socket client = activeClient;
-        if (client != null) {
-            try {
-                client.close();
-            } catch (IOException ignored) {
-            }
+        // Unblock every handler thread parked in a read on an attached client; each
+        // one's normal unwinding (engine shutdown, client close) does the rest.
+        for (Socket client : activeClients) {
+            closeQuietly(client);
         }
     }
 }
